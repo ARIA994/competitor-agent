@@ -44,6 +44,24 @@ flowchart LR
 | 2.2 | `2.2-market-forces-and-scoring.json` | Rates buyer and supplier power with cited sources, checks each competitor's website for a market version, and scores and ranks everyone. |
 | 3 | `3-report.json` | Builds the report data, lets Claude write the narrative, removes any sentence with a number not found in the data, fills the Google Docs template and exports a PDF. |
 
+### Workflows in n8n
+
+**Stage 1 · Company profile**
+
+![Stage 1: company profile workflow](docs/screenshots/1-company-profile.webp)
+
+**Stage 2.1 · Competitor discovery** (F1 rivals, F2 substitutes, F3 new entrants, then Apollo enrichment and the AI judge)
+
+![Stage 2.1: competitor discovery workflow](docs/screenshots/2.1-competitor-discovery.webp)
+
+**Stage 2.2 · Market forces and scoring** (F4 buyer power, F5 supplier power, website check, score and rank)
+
+![Stage 2.2: market forces and scoring workflow](docs/screenshots/2.2-market-forces-and-scoring.webp)
+
+**Stage 3 · Report**
+
+![Stage 3: report workflow](docs/screenshots/3-report.webp)
+
 ---
 
 ## Guardrails (rules in code, not in prompts)
