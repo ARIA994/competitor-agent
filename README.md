@@ -127,7 +127,6 @@ Tested on a Berlin SaaS company in transportation spend management, with focus m
 - **Rivalry is classified too strictly.** Some pure freight-audit vendors end up as substitutes instead of direct rivals.
 - **Size pulls large platforms up.** A big TMS with an audit module can outrank a small company doing exactly the same job.
 - **Missing domains.** When search finds a company without a website, Apollo can only match by name, and the code rejects wrong matches. These companies stay without HQ and size data.
-- **Apollo errors are not caught yet.** An out-of-credit error looks like "no match". The run should stop instead.
 - **The research prompts for buyer and supplier power are tuned for logistics software.** Other industries need adjusted questions.
 - **Snapshot only.** There is no "what changed since last month" view yet.
 
