@@ -120,6 +120,25 @@ Tested on a Berlin SaaS company in transportation spend management, with focus m
 - The DACH HQ share rose from 7% to 41% after adding market-language searches and the market filter.
 - 13 global players were separated into their own section instead of crowding the DACH list.
 
+### Sample report
+
+The PDF from that run, with the analysed company's name removed.
+
+![Sample report, page 1](docs/sample-report/sample-report-page-1.png)
+
+![Sample report, page 2](docs/sample-report/sample-report-page-2.png)
+
+<details>
+<summary>Pages 3–5 (watch list, peripheral, global players, method)</summary>
+
+![Sample report, page 3](docs/sample-report/sample-report-page-3.png)
+
+![Sample report, page 4](docs/sample-report/sample-report-page-4.png)
+
+![Sample report, page 5](docs/sample-report/sample-report-page-5.png)
+
+</details>
+
 ---
 
 ## Known limitations
