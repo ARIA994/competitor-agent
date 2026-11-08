@@ -1,0 +1,1485 @@
+{
+  "name": "2.1 · Competitor discovery + judge",
+  "nodes": [
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Company profile:\n{{ $('Prepare profile').first().json.profile_text }}",
+        "options": {
+          "systemMessage": "You find DIRECT COMPETITORS (rivalry, Porter's Five Forces) for the company in the profile.\nA direct competitor sells the same kind of product to the same kind of buyer.\nYour job is NOT to name competitors. Your job is to write search instructions that will find them.\n\nReturn ONLY one JSON object, no markdown, no code fences, no commentary:\n\n{\n  \"rival_definition\": \"one sentence: what a direct competitor sells and to whom\",\n  \"category_keywords\": [\"3 to 6 short terms buyers would use for this kind of product\"],\n  \"perplexity_queries\": [\"3 to 4 web search queries in English\"],\n  \"local_queries\": [\"2 to 3 queries in the local language of the focus market, or []\"],\n  \"company_search\": {\n    \"keywords\": [\"2 to 5 product keywords for a company database search\"],\n    \"industries\": [\"1 to 3 industries the COMPETITORS belong to (usually software)\"],\n    \"employee_min\": number or null,\n    \"employee_max\": number or null,\n    \"countries\": [\"country codes from the focus market line\"]\n  },\n  \"based_on\": [\"profile fields you used, e.g. offering, buyer_industries\"],\n  \"scope_note\": \"one sentence on any limit, e.g. regions unknown\"\n}\n\nRules:\n- Use only the profile. Never use outside knowledge about this company.\n- Queries describe the product category and the buyer. Do NOT put the company's own name or domain in any query: small company names are ambiguous and return unrelated companies.\n- Make the queries different from each other: one by category, one by buyer and use case, one by the main feature.\n- employee_min and employee_max describe the competitors' size, not the customers'. Use null if the profile gives no size hint.\n- MARKET: the profile ends with a \"focus market\" line. Write queries for THAT market.\n- \"perplexity_queries\" are in English. You may name the market (e.g. \"Germany\", \"DACH\", \"Europe\") in at most one of them. The search tool already filters by country.\n- \"local_queries\": if the focus market line says \"Search in English and <language>\", write 2 to 3 queries in that language, with the words local buyers really search with (natural terms, not word-by-word translations of the English queries). Otherwise return [].\n- \"countries\" in company_search: copy the country codes from the focus market line. If the focus market is Global, return [].\n- A field the profile lists as \"unknown\" must not be used as if it were known."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        1232,
+        1936
+      ],
+      "id": "54f88538-ac02-480d-9292-6f685807ab06",
+      "name": "AI Agent1"
+    },
+    {
+      "parameters": {
+        "numberInputs": 3
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        3392,
+        2672
+      ],
+      "id": "8895ecf5-4043-4fd8-a258-55668da40491",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "content": "# F2",
+        "height": 336,
+        "width": 1728,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        1184,
+        2256
+      ],
+      "typeVersion": 1,
+      "id": "68128c52-1f0a-43b2-b61f-9120b047c4b6",
+      "name": "Sticky Note1"
+    },
+    {
+      "parameters": {
+        "content": "# F3",
+        "height": 384,
+        "width": 1728,
+        "color": 3
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        1184,
+        2640
+      ],
+      "typeVersion": 1,
+      "id": "dbe6e359-168f-40cf-aa92-66bef7185bef",
+      "name": "Sticky Note2"
+    },
+    {
+      "parameters": {
+        "jsCode": "// PREPARE PROFILE: turn the saved Airtable record into a clean profile for the 5 branches\n// + MARKET CONFIG: which market we judge competitors in (DACH / EU / Global / North America)\nconst rec = $input.first().json;\nconst f = rec.fields || rec;            // works with Airtable output ({id, fields}) or a flat item\n\nlet raw;\ntry { raw = JSON.parse(f.profile_json || '{}'); }\ncatch (e) { throw new Error('profile_json is not valid JSON for run ' + f.run_id); }\n\n// values only (what the branches reason about) + the evidence behind them (for citations later)\nconst profile = {};\nconst evidence = {};\nfor (const [field, obj] of Object.entries(raw)) {\n  const v = obj ? obj.value : null;\n  const empty = v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0);\n  profile[field] = empty ? null : v;\n  if (!empty) {\n    evidence[field] = obj.items\n      ? obj.items.map(i => ({ item: i.item, quote: i.quote, source_url: i.source_url }))\n      : [{ item: v, quote: obj.quote, source_url: obj.source_url }];\n  }\n}\n\nconst missing_fields = Object.keys(profile).filter(k => profile[k] === null);\nconst CORE = ['offering', 'problem_solved', 'buyer_industries'];\nconst missing_core = CORE.filter(k => profile[k] === null);\n\n// ---------- MARKET CONFIG ----------\n// key = exact option name in the form and in Airtable\nconst MARKETS = {\n  'DACH':                     { label: 'DACH (Germany, Austria, Switzerland)', countries: ['DE', 'AT', 'CH'], languages: ['de', 'en'], local_language: 'German' },\n  'Germany':                  { label: 'Germany', countries: ['DE'], languages: ['de', 'en'], local_language: 'German' },\n  'Austria':                  { label: 'Austria', countries: ['AT'], languages: ['de', 'en'], local_language: 'German' },\n  'Switzerland':              { label: 'Switzerland', countries: ['CH'], languages: ['de', 'fr', 'it', 'en'], local_language: 'German' },\n  'UK & Ireland':             { label: 'UK & Ireland', countries: ['GB', 'IE'], languages: ['en'], local_language: '' },\n  'France':                   { label: 'France', countries: ['FR'], languages: ['fr', 'en'], local_language: 'French' },\n  'Benelux':                  { label: 'Benelux (Netherlands, Belgium, Luxembourg)', countries: ['NL', 'BE', 'LU'], languages: ['nl', 'fr', 'en'], local_language: 'Dutch' },\n  'Nordics':                  { label: 'Nordics (Sweden, Denmark, Norway, Finland)', countries: ['SE', 'DK', 'NO', 'FI'], languages: ['sv', 'da', 'no', 'fi', 'en'], local_language: 'Swedish' },\n  'Southern Europe':          { label: 'Southern Europe (Spain, Italy, Portugal)', countries: ['ES', 'IT', 'PT'], languages: ['es', 'it', 'pt', 'en'], local_language: 'Spanish' },\n  'Central & Eastern Europe': { label: 'Central & Eastern Europe (Poland, Czechia, Romania, Hungary)', countries: ['PL', 'CZ', 'RO', 'HU'], languages: ['pl', 'cs', 'ro', 'hu', 'en'], local_language: 'Polish' },\n  'EU':                       { label: 'Europe', countries: ['DE', 'FR', 'NL', 'GB', 'ES', 'IT'], languages: ['en', 'de', 'fr', 'nl', 'es', 'it'], local_language: '' },\n  'North America':            { label: 'North America (US, Canada)', countries: ['US', 'CA'], languages: ['en'], local_language: '' },\n  'United States':            { label: 'United States', countries: ['US'], languages: ['en'], local_language: '' },\n  'Latin America':            { label: 'Latin America (Brazil, Mexico, Argentina, Colombia)', countries: ['BR', 'MX', 'AR', 'CO'], languages: ['es', 'pt', 'en'], local_language: 'Spanish' },\n  'Middle East & Africa':     { label: 'Middle East & Africa (UAE, Saudi Arabia, Turkey, South Africa)', countries: ['AE', 'SA', 'TR', 'ZA'], languages: ['en', 'ar', 'tr'], local_language: '' },\n  'India':                    { label: 'India', countries: ['IN'], languages: ['en'], local_language: '' },\n  'Asia-Pacific':             { label: 'Asia-Pacific (Singapore, Australia, Japan, India)', countries: ['SG', 'AU', 'JP', 'IN'], languages: ['en', 'ja'], local_language: '' },\n  'Global':                   { label: 'Global', countries: [], languages: [], local_language: '' }\n};\n\n// value from the form (Airtable single select can come as \"DACH\" or {name: \"DACH\"})\nconst pick = v => (v && typeof v === 'object' && v.name) ? v.name : (v || '');\nlet focus = String(pick(f.focus_market)).trim();\nlet inferred = false;\nlet inferred_from = '';\n\n// no choice in the form -> infer from legal form, domain ending and stated regions\nif (!MARKETS[focus]) {\n  inferred = true;\n  const name = String(profile.legal_name || profile.company_name || f.company_name || '');\n  const dom = String(f.domain || '').toLowerCase();\n  const regions = Array.isArray(profile.regions) ? profile.regions.join(' ') : String(profile.regions || '');\n  if (/\\b(gmbh|ag|ug|kg|se)\\b/i.test(name) || /\\.(de|at|ch)$/.test(dom) || /germany|deutschland|dach|austria|switzerland/i.test(regions)) {\n    focus = 'DACH';\n    inferred_from = 'legal form, domain or regions point to DACH';\n  } else if (/europe|\\beu\\b|france|netherlands|spain|italy|united kingdom/i.test(regions)) {\n    focus = 'EU';\n    inferred_from = 'regions point to Europe';\n  } else if (/united states|\\busa?\\b|north america|canada/i.test(regions)) {\n    focus = 'North America';\n    inferred_from = 'regions point to North America';\n  } else {\n    focus = 'Global';\n    inferred_from = 'no market signal found';\n  }\n}\n\nconst m = MARKETS[focus];\n// checkbox: true / false / empty. Empty means yes (show global players as a separate section)\nconst include_global = f.include_global === undefined || f.include_global === null || f.include_global === '' ? true : f.include_global === true;\n\nconst market = {\n  focus: focus,\n  label: m.label,\n  countries: m.countries,\n  languages: m.languages,\n  local_language: m.local_language,\n  include_global: include_global,\n  inferred: inferred,\n  inferred_from: inferred_from\n};\n\n// readable version for prompts: one line per known field, empty fields named explicitly, then the market line\nconst show = v => Array.isArray(v) ? v.join('; ') : String(v);\nconst marketLine = 'focus market: ' + m.label +\n  (m.countries.length ? ' (countries ' + m.countries.join(', ') + ')' : '') +\n  (inferred ? ' [inferred: ' + inferred_from + ']' : ' [chosen by user]') +\n  (m.local_language ? '. Search in English and ' + m.local_language + '.' : '');\n\nconst profile_text = [\n  ...Object.entries(profile).filter(([, v]) => v !== null).map(([k, v]) => k + ': ' + show(v)),\n  'unknown (not stated by the company): ' + (missing_fields.join(', ') || 'none'),\n  marketLine\n].join('\\n');\n\nreturn [{ json: {\n  record_id: rec.id || null,\n  run_id: f.run_id,\n  domain: f.domain,\n  input_url: f.input_url,\n  company_name: profile.company_name || f.company_name || f.domain,\n  category: profile.category || null,\n  profile,\n  evidence,\n  profile_text,\n  missing_fields,\n  missing_core,\n  core_ok: missing_core.length === 0,\n  market\n} }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        816,
+        2720
+      ],
+      "id": "0116658c-15d6-4df2-b1e5-a98f951a0663",
+      "name": "Prepare profile"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "claude-sonnet-5",
+          "cachedResultName": "Claude Sonnet 5"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.6,
+      "position": [
+        1312,
+        2112
+      ],
+      "id": "34e63bb9-ed34-41f8-a41b-95456a98bc09",
+      "name": "Anthropic Chat Model1",
+      "credentials": {
+        "anthropicApi": {
+          "id": "REPLACE",
+          "name": "Anthropic"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "search",
+        "query": "={{ $json.query }}",
+        "options": {
+          "country": "={{ $json.country }}",
+          "searchLanguageFilter": "={{ $json.language_filter }}"
+        },
+        "requestOptions": {}
+      },
+      "type": "n8n-nodes-base.perplexity",
+      "typeVersion": 3,
+      "position": [
+        1936,
+        1936
+      ],
+      "id": "f737be7e-4f06-4396-b5d1-fe4583160c4b",
+      "name": "F1 perplexity",
+      "credentials": {
+        "perplexityApi": {
+          "id": "REPLACE",
+          "name": "Perplexity"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "search_jobs",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1.1,
+      "position": [
+        1760,
+        1936
+      ],
+      "id": "ac3ce938-b084-4529-8538-5dba0f2365f9",
+      "name": "Split Out"
+    },
+    {
+      "parameters": {
+        "jsCode": "// F1 - COLLECT RESULTS: merge all Perplexity searches into ONE list for the AI Agent\n// (Mode: Run Once for All Items, so the AI Agent after it runs once, not 5 times)\nconst plan = $('F1 validate').first().json;\nconst ownDomain = String(plan.domain || '').toLowerCase();\nconst MAX_SNIPPET = 1200;\nconst jobs = plan.search_jobs || [];\n// scope of the search that found a result: local (local language), market (English, in market), global (no country)\nconst scopeOf = qi => (jobs[qi] ? jobs[qi].scope + (jobs[qi].country ? ' ' + jobs[qi].country : '') : 'global');\n\nconst domainOf = url => {\n  const m = String(url || '').match(/^https?:\\/\\/([^\\/?#:]+)/i);\n  return m ? m[1].toLowerCase().replace(/^www\\./, '') : '';\n};\n\n// list pages name several competitors; vendor pages ARE a candidate company\nconst LIST_DOMAINS = ['capterra.', 'g2.com', 'softwareadvice.', 'getapp.', 'sourceforge.net', 'f6s.com', 'github.com', 'trustradius.com', 'gartner.com', 'saasworthy.com'];\nconst DROP_DOMAINS = ['marketintelo.com', 'dataintelo.com', 'marketsandmarkets.com', 'grandviewresearch.com', 'businesswire.com', 'prnewswire.com', 'linkedin.com', 'youtube.com', 'wikipedia.org'];\n\nfunction kindOf(r, dom) {\n  const t = (String(r.title || '') + ' ' + String(r.url || '')).toLowerCase();\n  if (dom === ownDomain || dom.endsWith('.' + ownDomain)) return 'own';\n  if (/\\.(gov|europa\\.eu)$/.test(dom) || dom.endsWith('europa.eu')) return 'drop';\n  if (DROP_DOMAINS.some(d => dom === d || dom.endsWith('.' + d))) return 'drop';\n  if (/market (size|research|report)|market-research|forecast report/.test(t)) return 'drop';\n  if (LIST_DOMAINS.some(d => dom.includes(d))) return 'list';\n  if (/\\b(best|top \\d+|top-\\d+|alternatives|vs\\.?|versus|compare|comparison|review)\\b/.test(t)) return 'list';\n  return 'vendor';\n}\n\nconst byUrl = new Map();\nconst dropped = [];\n$input.all().forEach((item, qi) => {\n  for (const r of (item.json.results || [])) {\n    if (!r || !r.url) continue;\n    const key = String(r.url).toLowerCase().replace(/[?#].*$/, '').replace(/\\/+$/, '');\n    if (byUrl.has(key)) { const e = byUrl.get(key); e.found_by_queries.push(qi + 1); if (!e.found_via.includes(scopeOf(qi))) e.found_via.push(scopeOf(qi)); continue; }\n    const dom = domainOf(r.url);\n    const kind = kindOf(r, dom);\n    if (kind === 'own' || kind === 'drop') { dropped.push({ url: r.url, reason: kind === 'own' ? 'own site' : 'report/news/official page' }); continue; }\n    byUrl.set(key, {\n      kind, domain: dom, title: String(r.title || '').trim(), url: r.url,\n      snippet: String(r.snippet || '').replace(/\\s+/g, ' ').trim().slice(0, MAX_SNIPPET),\n      found_by_queries: [qi + 1],\n      found_via: [scopeOf(qi)]\n    });\n  }\n});\n\nconst results = [...byUrl.values()].map((r, i) => ({ id: 'R' + (i + 1), ...r }));\nconst results_text = results.map(r =>\n  '[' + r.id + '] kind=' + r.kind + ' | domain=' + r.domain + ' | found via: ' + r.found_via.join(', ') + ' | ' + r.title + ' | ' + r.url + '\\n' + r.snippet\n).join('\\n\\n');\n\nreturn [{ json: {\n  run_id: plan.run_id,\n  domain: plan.domain,\n  company_name: plan.company_name,\n  force: 'rivalry',\n  rival_definition: plan.rival_definition,\n  market: plan.market,\n  result_count: results.length,\n  vendor_pages: results.filter(r => r.kind === 'vendor').length,\n  list_pages: results.filter(r => r.kind === 'list').length,\n  results,\n  results_text,\n  dropped\n} }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2160,
+        1936
+      ],
+      "id": "043dd776-f717-4b08-bb58-1c92801d00ef",
+      "name": "F1 collect results"
+    },
+    {
+      "parameters": {
+        "jsCode": "// F1 VALIDATE rivalry PLAN: parse the plan, enforce the rules, build one search job per query (with country + language)\nconst prof = $('Prepare profile').first().json;\nconst raw = String($input.first().json.output || '').trim();\n\n// parse (same repair as Check quotes: code fences and trailing commas)\nconst jsonText = raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1);\nlet plan;\ntry { plan = JSON.parse(jsonText); }\ncatch (e1) {\n  try { plan = JSON.parse(jsonText.replace(/,\\s*([}\\]])/g, '$1')); }\n  catch (e2) { throw new Error('AI Agent1 did not return valid JSON: ' + raw.slice(0, 300)); }\n}\n\nconst issues = [];\nconst asList = v => (Array.isArray(v) ? v : []).map(x => String(x || '').trim()).filter(Boolean);\n\n// 1. Queries: no own name or domain, no duplicates, sensible length, max 5\nconst own = [prof.company_name, prof.domain, String(prof.domain || '').split('.')[0]]\n  .filter(Boolean).map(s => String(s).toLowerCase());\nconst seen = new Set();\nconst queries = [];\nfor (const q of asList(plan.perplexity_queries)) {\n  const lq = q.toLowerCase();\n  const hitsOwn = own.some(o => o.length >= 3 && new RegExp('\\\\b' + o.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&') + '\\\\b').test(lq));\n  if (hitsOwn) { issues.push('dropped query with own name: ' + q); continue; }\n  if (q.length < 10 || q.length > 200) { issues.push('dropped query (length): ' + q); continue; }\n  if (seen.has(lq)) continue;\n  seen.add(lq);\n  queries.push(q);\n}\nif (queries.length > 4) { issues.push('cut English queries to 4'); queries.length = 4; }\nif (queries.length < 2) throw new Error('Rivalry plan has fewer than 2 usable queries: ' + JSON.stringify(plan.perplexity_queries));\n\n// 2. Company search filters\nconst cs = plan.company_search || {};\nlet min = Number.isFinite(cs.employee_min) ? cs.employee_min : null;\nlet max = Number.isFinite(cs.employee_max) ? cs.employee_max : null;\nif (min !== null && max !== null && min > max) { [min, max] = [max, min]; issues.push('swapped employee_min/max'); }\nconst company_search = {\n  keywords: asList(cs.keywords).slice(0, 5),\n  industries: asList(cs.industries).slice(0, 3),\n  employee_min: min,\n  employee_max: max,\n  countries: asList(cs.countries)\n};\nif (!company_search.keywords.length) throw new Error('Rivalry plan has no company_search keywords');\n\n// 4. MARKET: countries and search jobs come from the focus market (form), not from profile.regions\nconst mk = prof.market || { focus: 'Global', label: 'Global', countries: [], languages: [], local_language: '', include_global: true };\nconst LANG_CODE = { German: 'de', French: 'fr', Dutch: 'nl', Swedish: 'sv', Spanish: 'es', Polish: 'pl', Italian: 'it', Portuguese: 'pt', Japanese: 'ja' };\nconst localCode = LANG_CODE[mk.local_language] || '';\nconst C = Array.isArray(mk.countries) ? mk.countries : [];\ncompany_search.countries = C.slice();\n\n// local-language queries (only when the market has a local language)\nconst local_queries = [];\nif (localCode) {\n  for (const q of asList(plan.local_queries)) {\n    const lq = q.toLowerCase();\n    const hitsOwn = own.some(o => o.length >= 3 && new RegExp('\\\\b' + o.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&') + '\\\\b').test(lq));\n    if (hitsOwn) { issues.push('dropped local query with own name: ' + q); continue; }\n    if (q.length < 6 || q.length > 200) { issues.push('dropped local query (length): ' + q); continue; }\n    if (seen.has(lq)) continue;\n    seen.add(lq);\n    local_queries.push(q);\n  }\n  if (local_queries.length > 3) { issues.push('cut local queries to 3'); local_queries.length = 3; }\n  if (!local_queries.length) issues.push('no usable ' + mk.local_language + ' queries from the plan');\n}\n\n// one item per search: English in the main market, local language rotated over the market countries,\n// plus one global search (no country) when global players should be included\nconst search_jobs = [];\nif (!C.length) {\n  queries.forEach(q => search_jobs.push({ query: q, country: '', language_filter: '', scope: 'global' }));\n} else {\n  queries.forEach(q => search_jobs.push({ query: q, country: C[0], language_filter: (mk.languages || []).join(','), scope: 'market' }));\n  local_queries.forEach((q, i) => search_jobs.push({ query: q, country: C[i % C.length], language_filter: localCode, scope: 'local' }));\n  if (mk.include_global && queries.length) search_jobs.push({ query: queries[0], country: '', language_filter: '', scope: 'global' });\n}\n\nreturn [{ json: {\n  run_id: prof.run_id,\n  domain: prof.domain,\n  company_name: prof.company_name,\n  force: 'rivalry',\n  rival_definition: String(plan.rival_definition || ''),\n  category_keywords: asList(plan.category_keywords),\n  perplexity_queries: queries,\n  local_queries,\n  search_jobs,\n  market: mk,\n  company_search,\n  based_on: asList(plan.based_on),\n  scope_note: String(plan.scope_note || ''),\n  issues\n} }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1536,
+        1936
+      ],
+      "id": "00eaca88-e56c-45a6-bd16-92c7cf6f9b8e",
+      "name": "F1 validate"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "claude-sonnet-5",
+          "cachedResultName": "Claude Sonnet 5"
+        },
+        "options": {
+          "maxTokensToSample": 16000,
+          "temperature": 0
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.6,
+      "position": [
+        2384,
+        2096
+      ],
+      "id": "51574161-440d-45ae-acf3-03f20cb9a641",
+      "name": "Anthropic Chat Model2",
+      "credentials": {
+        "anthropicApi": {
+          "id": "REPLACE",
+          "name": "Anthropic"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// F1 CHECK: keep only companies whose evidence really appears in the search results\n// Output: one item per verified competitor (ready for Merge 1)\nconst col = $('F1 collect results').first().json;\nconst out = $input.first().json;\nconst raw = String(out.output || out.text || '').trim();\n\nconst jsonText = raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1);\nlet parsed;\ntry { parsed = JSON.parse(jsonText); }\ncatch (e1) {\n  try { parsed = JSON.parse(jsonText.replace(/,\\s*([}\\]])/g, '$1')); }\n  catch (e2) { throw new Error('F1 extract did not return valid JSON (maybe cut off - check max tokens): ' + raw.slice(-200)); }\n}\n\nconst norm = s => String(s || '').toLowerCase()\n  .replace(/[‘’]/g, \"'\").replace(/[“”]/g, '\"').replace(/[–—]/g, '-')\n  .replace(/[*_#>`\\[\\]()|]/g, ' ').replace(/\\s+/g, ' ').trim();\nconst coreName = s => norm(s).replace(/\\.(com|ai|io|de|co|net)$/, '')\n  .replace(/\\b(technologies|technology|software|systems|inc|ltd|gmbh|group|logistics|solutions)\\b/g, '').replace(/\\s+/g, ' ').trim();\n\nconst results = {};\nfor (const r of col.results || []) results[r.id] = { ...r, text: norm(r.title + ' ' + r.snippet + ' ' + r.url) };\nconst knownDomains = new Set((col.results || []).map(r => r.domain));\nconst ownDomain = String(col.domain || '').toLowerCase();\nconst ownName = coreName(col.company_name);\n\n// a quote may contain \"...\" where the model skipped words: every part must be found\nconst quoteFound = (quote, r) => {\n  const parts = String(quote || '').split(/\\.\\.\\.|…/).map(norm).filter(p => p.length >= 8);\n  return parts.length > 0 && parts.every(p => r.text.includes(p));\n};\n\nconst kept = [];\nconst failed = [];\nfor (const c of parsed.companies || []) {\n  const name = String(c.name || '').trim();\n  if (!name) continue;\n  let domain = c.domain ? String(c.domain).toLowerCase().replace(/^https?:\\/\\//, '').replace(/^www\\./, '').replace(/\\/.*$/, '') : null;\n\n  if (domain && (domain === ownDomain || domain.endsWith('.' + ownDomain)) || coreName(name) === ownName) {\n    failed.push({ name, reason: 'is the analysed company' }); continue;\n  }\n  // a claimed domain must belong to one of the search results; otherwise leave it for enrichment\n  const domainNote = domain && !knownDomains.has(domain) ? 'domain not in results, cleared' : null;\n  if (domainNote) domain = null;\n\n  const cn = coreName(name);\n  const goodEvidence = [];\n  for (const ev of c.evidence || []) {\n    const r = results[ev.result_id];\n    if (!r) continue;\n    if (!quoteFound(ev.quote, r)) continue;\n    // the result must be about this company: its own domain, or the name appears in the result\n    const aboutCompany = (domain && r.domain === domain) || (cn.length >= 3 && r.text.includes(cn));\n    if (!aboutCompany) continue;\n    goodEvidence.push({ result_id: ev.result_id, quote: ev.quote, url: r.url, kind: r.kind });\n  }\n  if (!goodEvidence.length) { failed.push({ name, reason: 'no evidence found in the results' }); continue; }\n\n  kept.push({\n    run_id: col.run_id,\n    analysed_domain: col.domain,\n    force: 'rivalry',\n    tool: 'perplexity',\n    name,\n    domain,\n    fit: c.fit === 'adjacent' ? 'adjacent' : 'direct',\n    what_they_do: String(c.what_they_do || ''),\n    evidence: goodEvidence,\n    from_own_site: goodEvidence.some(e => e.kind === 'vendor' && domain && results[e.result_id].domain === domain),\n    note: domainNote\n  });\n}\n\n// nothing kept: return one status item so the reasons are visible (dedupe skips items without a name)\nif (!kept.length) {\n  return [{ json: {\n    run_id: col.run_id,\n    force: 'rivalry',\n    status: 'no_candidates',\n    ai_company_count: (parsed.companies || []).length,\n    f1_failed: failed,\n    f1_rejected_by_ai: parsed.rejected || []\n  } }];\n}\n// the log (failed + rejected) goes on the first item only\nreturn kept.map((k, i) => ({ json: i === 0 ? { ...k, f1_failed: failed, f1_rejected_by_ai: parsed.rejected || [] } : k }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2752,
+        1936
+      ],
+      "id": "f5e20e0a-b24f-4772-8e20-4632666b7052",
+      "name": "F1 check",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Competitor definition: {{ $json.rival_definition }}\nCompany we analyse (never list it): {{ $json.company_name }} ({{ $json.domain }})\n\nSearch results:\n{{ $json.results_text }}",
+        "options": {
+          "systemMessage": "You read web search results and list the companies in them that compete with the company we analyse.\nUse ONLY the search results. Never add a company from your own knowledge.\n\nReturn ONLY one JSON object, no markdown:\n{\n  \"companies\": [\n    {\n      \"name\": \"company name exactly as written in the result\",\n      \"domain\": \"the company's own domain, ONLY if one of the results is on that domain, else null\",\n      \"fit\": \"direct\" or \"adjacent\",\n      \"what_they_do\": \"one sentence\",\n      \"evidence\": [{\"result_id\": \"R3\", \"quote\": \"words copied exactly from that result's title or snippet\"}]\n    }\n  ],\n  \"rejected\": [{\"name\": \"...\", \"reason\": \"...\"}]\n}\n\nRules:\n- direct = sells the same kind of product as the competitor definition to the same buyers.\n- adjacent = a broader product (e.g. a TMS or e-commerce platform) that includes this as one module.\n- Not a competitor: tools for other jobs (general e-invoicing, procurement spend, document parsing, freight forwarding services), research firms, publishers and directories (Capterra, G2, F6S...). Put them in \"rejected\".\n- Every company needs at least one evidence item. The quote must contain the company name or come from a result on the company's own domain, and must show what it does.\n- A list page (kind=list) can be evidence for several companies. A vendor page is evidence for the company that owns that domain.\n- Merge duplicates: one entry per company.\n\nSize limits:\n- At most 20 companies. If there are more, keep the clearest competitors.\n- At most 2 evidence items per company, each quote at most 25 words.\n- \"rejected\": names and a reason of at most 6 words. At most 15 entries."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        2384,
+        1936
+      ],
+      "id": "997d695d-e6ce-49d8-95a8-7262ad8fe6f6",
+      "name": "F1 extract"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Company profile:\n{{ $('Prepare profile').first().json.profile_text }}",
+        "options": {
+          "systemMessage": "You find SUBSTITUTES (Porter's Five Forces) for the company in the profile.\nA substitute solves the SAME customer problem in a DIFFERENT way: another kind of software,\nan outsourced service, a module inside a bigger platform, or doing it in-house or by hand.\nDirect competitors (same kind of product) are NOT substitutes.\nYour job is NOT to name companies. Your job is to write search instructions that will find them.\n\nReturn ONLY one JSON object, no markdown, no code fences, no commentary:\n{\n  \"rival_definition\": \"one sentence: the customer problem, and what counts as a substitute\",\n  \"substitute_types\": [\n    {\"type\": \"short name\", \"kind\": \"software\" | \"service\" | \"module\" | \"in_house\" | \"manual\", \"why\": \"one sentence\"}\n  ],\n  \"perplexity_queries\": [\"3 to 4 web search queries in English, ONLY for kinds software, service or module\"],\n  \"local_queries\": [\"2 to 3 queries in the local language of the focus market, or []\"],\n  \"company_search\": {\"keywords\": [\"2 to 5 keywords\"], \"industries\": [\"1 to 3\"], \"employee_min\": null, \"employee_max\": null, \"countries\": []},\n  \"based_on\": [\"profile fields you used\"],\n  \"scope_note\": \"one sentence\"\n}\n\nRules:\n- Use only the profile. Never use outside knowledge about this company.\n- 3 to 6 substitute types. Include in_house or manual if buyers could plausibly do the job themselves; these get no search query.\n- Queries describe the substitute and the problem, never the company's own name or domain.\n- Do not write queries that would mainly find direct competitors.\n- MARKET: the profile ends with a \"focus market\" line. Write queries for THAT market.\n- \"perplexity_queries\" are in English. You may name the market (e.g. \"Germany\", \"DACH\", \"Europe\") in at most one of them. The search tool already filters by country.\n- \"local_queries\": if the focus market line says \"Search in English and <language>\", write 2 to 3 queries in that language, with the words local buyers really search with (natural terms, not word-by-word translations of the English queries). Otherwise return [].\n- \"countries\" in company_search: copy the country codes from the focus market line. If the focus market is Global, return [].\n- Local queries follow the same rule: substitutes only, not direct competitors."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        1216,
+        2320
+      ],
+      "id": "bad2b0a2-0b64-4562-9e37-0fffbc58e5bf",
+      "name": "F2 plan"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "claude-sonnet-5",
+          "cachedResultName": "Claude Sonnet 5"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.6,
+      "position": [
+        1296,
+        2496
+      ],
+      "id": "78a81dfd-95aa-4dde-b781-49cdfc20eadd",
+      "name": "F2 chat model (plan)",
+      "credentials": {
+        "anthropicApi": {
+          "id": "REPLACE",
+          "name": "Anthropic"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "search",
+        "query": "={{ $json.query }}",
+        "options": {
+          "country": "={{ $json.country }}",
+          "searchLanguageFilter": "={{ $json.language_filter }}"
+        },
+        "requestOptions": {}
+      },
+      "type": "n8n-nodes-base.perplexity",
+      "typeVersion": 3,
+      "position": [
+        1920,
+        2320
+      ],
+      "id": "80ba0a8a-40af-4165-ad41-8a3e56b6c4c8",
+      "name": "F2 perplexity",
+      "credentials": {
+        "perplexityApi": {
+          "id": "REPLACE",
+          "name": "Perplexity"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "search_jobs",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1.1,
+      "position": [
+        1744,
+        2320
+      ],
+      "id": "0a3eb407-0bbb-478d-af3d-99651b9522b0",
+      "name": "F2 split out"
+    },
+    {
+      "parameters": {
+        "jsCode": "// F2 - COLLECT RESULTS: merge all Perplexity searches into ONE list for the AI Agent\n// (Mode: Run Once for All Items, so the AI Agent after it runs once, not 5 times)\nconst plan = $('F2 validate').first().json;\nconst ownDomain = String(plan.domain || '').toLowerCase();\nconst MAX_SNIPPET = 1200;\nconst jobs = plan.search_jobs || [];\n// scope of the search that found a result: local (local language), market (English, in market), global (no country)\nconst scopeOf = qi => (jobs[qi] ? jobs[qi].scope + (jobs[qi].country ? ' ' + jobs[qi].country : '') : 'global');\n\nconst domainOf = url => {\n  const m = String(url || '').match(/^https?:\\/\\/([^\\/?#:]+)/i);\n  return m ? m[1].toLowerCase().replace(/^www\\./, '') : '';\n};\n\n// list pages name several competitors; vendor pages ARE a candidate company\nconst LIST_DOMAINS = ['capterra.', 'g2.com', 'softwareadvice.', 'getapp.', 'sourceforge.net', 'f6s.com', 'github.com', 'trustradius.com', 'gartner.com', 'saasworthy.com'];\nconst DROP_DOMAINS = ['marketintelo.com', 'dataintelo.com', 'marketsandmarkets.com', 'grandviewresearch.com', 'businesswire.com', 'prnewswire.com', 'linkedin.com', 'youtube.com', 'wikipedia.org'];\n\nfunction kindOf(r, dom) {\n  const t = (String(r.title || '') + ' ' + String(r.url || '')).toLowerCase();\n  if (dom === ownDomain || dom.endsWith('.' + ownDomain)) return 'own';\n  if (/\\.(gov|europa\\.eu)$/.test(dom) || dom.endsWith('europa.eu')) return 'drop';\n  if (DROP_DOMAINS.some(d => dom === d || dom.endsWith('.' + d))) return 'drop';\n  if (/market (size|research|report)|market-research|forecast report/.test(t)) return 'drop';\n  if (LIST_DOMAINS.some(d => dom.includes(d))) return 'list';\n  if (/\\b(best|top \\d+|top-\\d+|alternatives|vs\\.?|versus|compare|comparison|review)\\b/.test(t)) return 'list';\n  return 'vendor';\n}\n\nconst byUrl = new Map();\nconst dropped = [];\n$input.all().forEach((item, qi) => {\n  for (const r of (item.json.results || [])) {\n    if (!r || !r.url) continue;\n    const key = String(r.url).toLowerCase().replace(/[?#].*$/, '').replace(/\\/+$/, '');\n    if (byUrl.has(key)) { const e = byUrl.get(key); e.found_by_queries.push(qi + 1); if (!e.found_via.includes(scopeOf(qi))) e.found_via.push(scopeOf(qi)); continue; }\n    const dom = domainOf(r.url);\n    const kind = kindOf(r, dom);\n    if (kind === 'own' || kind === 'drop') { dropped.push({ url: r.url, reason: kind === 'own' ? 'own site' : 'report/news/official page' }); continue; }\n    byUrl.set(key, {\n      kind, domain: dom, title: String(r.title || '').trim(), url: r.url,\n      snippet: String(r.snippet || '').replace(/\\s+/g, ' ').trim().slice(0, MAX_SNIPPET),\n      found_by_queries: [qi + 1],\n      found_via: [scopeOf(qi)]\n    });\n  }\n});\n\nconst results = [...byUrl.values()].map((r, i) => ({ id: 'R' + (i + 1), ...r }));\nconst results_text = results.map(r =>\n  '[' + r.id + '] kind=' + r.kind + ' | domain=' + r.domain + ' | found via: ' + r.found_via.join(', ') + ' | ' + r.title + ' | ' + r.url + '\\n' + r.snippet\n).join('\\n\\n');\n\nreturn [{ json: {\n  run_id: plan.run_id,\n  domain: plan.domain,\n  company_name: plan.company_name,\n  force: 'substitute',\n  rival_definition: plan.rival_definition,\n  market: plan.market,\n  result_count: results.length,\n  vendor_pages: results.filter(r => r.kind === 'vendor').length,\n  list_pages: results.filter(r => r.kind === 'list').length,\n  results,\n  results_text,\n  dropped\n} }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2144,
+        2320
+      ],
+      "id": "13423280-3629-4463-a2a5-bd0fbfdba365",
+      "name": "F2 collect results"
+    },
+    {
+      "parameters": {
+        "jsCode": "// F2 VALIDATE substitute PLAN: parse the plan, enforce the rules, build one search job per query (with country + language)\nconst prof = $('Prepare profile').first().json;\nconst raw = String($input.first().json.output || '').trim();\n\n// parse (same repair as Check quotes: code fences and trailing commas)\nconst jsonText = raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1);\nlet plan;\ntry { plan = JSON.parse(jsonText); }\ncatch (e1) {\n  try { plan = JSON.parse(jsonText.replace(/,\\s*([}\\]])/g, '$1')); }\n  catch (e2) { throw new Error('F2 plan did not return valid JSON: ' + raw.slice(0, 300)); }\n}\n\nconst issues = [];\nconst asList = v => (Array.isArray(v) ? v : []).map(x => String(x || '').trim()).filter(Boolean);\n\n// 1. Queries: no own name or domain, no duplicates, sensible length, max 5\nconst own = [prof.company_name, prof.domain, String(prof.domain || '').split('.')[0]]\n  .filter(Boolean).map(s => String(s).toLowerCase());\nconst seen = new Set();\nconst queries = [];\nfor (const q of asList(plan.perplexity_queries)) {\n  const lq = q.toLowerCase();\n  const hitsOwn = own.some(o => o.length >= 3 && new RegExp('\\\\b' + o.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&') + '\\\\b').test(lq));\n  if (hitsOwn) { issues.push('dropped query with own name: ' + q); continue; }\n  if (q.length < 10 || q.length > 200) { issues.push('dropped query (length): ' + q); continue; }\n  if (seen.has(lq)) continue;\n  seen.add(lq);\n  queries.push(q);\n}\nif (queries.length > 4) { issues.push('cut English queries to 4'); queries.length = 4; }\nif (queries.length < 2) throw new Error('Substitute plan has fewer than 2 usable queries: ' + JSON.stringify(plan.perplexity_queries));\n\n// 2. Company search filters\nconst cs = plan.company_search || {};\nlet min = Number.isFinite(cs.employee_min) ? cs.employee_min : null;\nlet max = Number.isFinite(cs.employee_max) ? cs.employee_max : null;\nif (min !== null && max !== null && min > max) { [min, max] = [max, min]; issues.push('swapped employee_min/max'); }\nconst company_search = {\n  keywords: asList(cs.keywords).slice(0, 5),\n  industries: asList(cs.industries).slice(0, 3),\n  employee_min: min,\n  employee_max: max,\n  countries: asList(cs.countries)\n};\nif (!company_search.keywords.length) throw new Error('Substitute plan has no company_search keywords');\n\n// 4. MARKET: countries and search jobs come from the focus market (form), not from profile.regions\nconst mk = prof.market || { focus: 'Global', label: 'Global', countries: [], languages: [], local_language: '', include_global: true };\nconst LANG_CODE = { German: 'de', French: 'fr', Dutch: 'nl', Swedish: 'sv', Spanish: 'es', Polish: 'pl', Italian: 'it', Portuguese: 'pt', Japanese: 'ja' };\nconst localCode = LANG_CODE[mk.local_language] || '';\nconst C = Array.isArray(mk.countries) ? mk.countries : [];\ncompany_search.countries = C.slice();\n\n// local-language queries (only when the market has a local language)\nconst local_queries = [];\nif (localCode) {\n  for (const q of asList(plan.local_queries)) {\n    const lq = q.toLowerCase();\n    const hitsOwn = own.some(o => o.length >= 3 && new RegExp('\\\\b' + o.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&') + '\\\\b').test(lq));\n    if (hitsOwn) { issues.push('dropped local query with own name: ' + q); continue; }\n    if (q.length < 6 || q.length > 200) { issues.push('dropped local query (length): ' + q); continue; }\n    if (seen.has(lq)) continue;\n    seen.add(lq);\n    local_queries.push(q);\n  }\n  if (local_queries.length > 3) { issues.push('cut local queries to 3'); local_queries.length = 3; }\n  if (!local_queries.length) issues.push('no usable ' + mk.local_language + ' queries from the plan');\n}\n\n// one item per search: English in the main market, local language rotated over the market countries,\n// plus one global search (no country) when global players should be included\nconst search_jobs = [];\nif (!C.length) {\n  queries.forEach(q => search_jobs.push({ query: q, country: '', language_filter: '', scope: 'global' }));\n} else {\n  queries.forEach(q => search_jobs.push({ query: q, country: C[0], language_filter: (mk.languages || []).join(','), scope: 'market' }));\n  local_queries.forEach((q, i) => search_jobs.push({ query: q, country: C[i % C.length], language_filter: localCode, scope: 'local' }));\n  if (mk.include_global && queries.length) search_jobs.push({ query: queries[0], country: '', language_filter: '', scope: 'global' });\n}\n\nreturn [{ json: {\n  run_id: prof.run_id,\n  domain: prof.domain,\n  company_name: prof.company_name,\n  force: 'substitute',\n  rival_definition: String(plan.rival_definition || ''),\n  category_keywords: asList(plan.category_keywords),\n  perplexity_queries: queries,\n  local_queries,\n  search_jobs,\n  market: mk,\n  company_search,\n  based_on: asList(plan.based_on),\n  substitute_types: Array.isArray(plan.substitute_types) ? plan.substitute_types : [],\n  scope_note: String(plan.scope_note || ''),\n  issues\n} }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1520,
+        2320
+      ],
+      "id": "99fbc87a-d4e4-4c10-8a3c-eef4d9f689e6",
+      "name": "F2 validate"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "claude-sonnet-5",
+          "cachedResultName": "Claude Sonnet 5"
+        },
+        "options": {
+          "maxTokensToSample": 16000,
+          "temperature": 0
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.6,
+      "position": [
+        2368,
+        2480
+      ],
+      "id": "fcda83e6-eb09-4981-b903-5190480b9d53",
+      "name": "F2 chat model (extract)",
+      "credentials": {
+        "anthropicApi": {
+          "id": "REPLACE",
+          "name": "Anthropic"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// F2 CHECK: keep only companies whose evidence really appears in the search results\n// Output: one item per verified competitor (ready for Merge 1)\nconst col = $('F2 collect results').first().json;\nconst out = $input.first().json;\nconst raw = String(out.output || out.text || '').trim();\n\n// parse the AI answer; if it was cut off, keep every company object that is complete\nconst jsonText = raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1);\nlet parsed;\nlet truncated = false;\ntry { parsed = JSON.parse(jsonText); }\ncatch (e1) {\n  try { parsed = JSON.parse(jsonText.replace(/,\\s*([}\\]])/g, '$1')); }\n  catch (e2) {\n    const objs = [];\n    const start = raw.indexOf('[', raw.indexOf('\"companies\"'));\n    if (raw.indexOf('\"companies\"') >= 0 && start >= 0) {\n      let depth = 0, inStr = false, esc = false, objStart = -1;\n      for (let j = start + 1; j < raw.length; j++) {\n        const ch = raw[j];\n        if (inStr) { if (esc) esc = false; else if (ch === '\\\\') esc = true; else if (ch === '\"') inStr = false; continue; }\n        if (ch === '\"') { inStr = true; continue; }\n        if (ch === '{') { if (depth === 0) objStart = j; depth++; }\n        else if (ch === '}') { depth--; if (depth === 0 && objStart >= 0) { try { objs.push(JSON.parse(raw.slice(objStart, j + 1))); } catch (e) {} objStart = -1; } }\n        else if (ch === ']' && depth === 0) break;\n      }\n    }\n    if (!objs.length) throw new Error('Extract did not return valid JSON and nothing could be recovered: ' + raw.slice(-200));\n    parsed = { companies: objs, rejected: [] };\n    truncated = true;\n  }\n}\n\nconst norm = s => String(s || '').toLowerCase()\n  .replace(/[‘’]/g, \"'\").replace(/[“”]/g, '\"').replace(/[–—]/g, '-')\n  .replace(/[*_#>`\\[\\]()|]/g, ' ').replace(/\\s+/g, ' ').trim();\nconst coreName = s => norm(s).replace(/\\.(com|ai|io|de|co|net)$/, '')\n  .replace(/\\b(technologies|technology|software|systems|inc|ltd|gmbh|group|logistics|solutions)\\b/g, '').replace(/\\s+/g, ' ').trim();\n\nconst results = {};\nfor (const r of col.results || []) results[r.id] = { ...r, text: norm(r.title + ' ' + r.snippet + ' ' + r.url) };\nconst knownDomains = new Set((col.results || []).map(r => r.domain));\nconst ownDomain = String(col.domain || '').toLowerCase();\nconst ownName = coreName(col.company_name);\n\n// a quote may contain \"...\" where the model skipped words: every part must be found\nconst quoteFound = (quote, r) => {\n  const parts = String(quote || '').split(/\\.\\.\\.|…/).map(norm).filter(p => p.length >= 8);\n  return parts.length > 0 && parts.every(p => r.text.includes(p));\n};\n\nconst kept = [];\nconst failed = [];\nfor (const c of parsed.companies || []) {\n  const name = String(c.name || '').trim();\n  if (!name) continue;\n  let domain = c.domain ? String(c.domain).toLowerCase().replace(/^https?:\\/\\//, '').replace(/^www\\./, '').replace(/\\/.*$/, '') : null;\n\n  if (domain && (domain === ownDomain || domain.endsWith('.' + ownDomain)) || coreName(name) === ownName) {\n    failed.push({ name, reason: 'is the analysed company' }); continue;\n  }\n  // a claimed domain must belong to one of the search results; otherwise leave it for enrichment\n  const domainNote = domain && !knownDomains.has(domain) ? 'domain not in results, cleared' : null;\n  if (domainNote) domain = null;\n\n  const cn = coreName(name);\n  const goodEvidence = [];\n  for (const ev of c.evidence || []) {\n    const r = results[ev.result_id];\n    if (!r) continue;\n    if (!quoteFound(ev.quote, r)) continue;\n    // the result must be about this company: its own domain, or the name appears in the result\n    const aboutCompany = (domain && r.domain === domain) || (cn.length >= 3 && r.text.includes(cn));\n    if (!aboutCompany) continue;\n    goodEvidence.push({ result_id: ev.result_id, quote: ev.quote, url: r.url, kind: r.kind });\n  }\n  if (!goodEvidence.length) { failed.push({ name, reason: 'no evidence found in the results' }); continue; }\n\n  kept.push({\n    run_id: col.run_id,\n    analysed_domain: col.domain,\n    force: 'substitute',\n    tool: 'perplexity',\n    name,\n    domain,\n    fit: c.fit === 'adjacent' ? 'adjacent' : 'direct',\n    what_they_do: String(c.what_they_do || ''),\n    evidence: goodEvidence,\n    from_own_site: goodEvidence.some(e => e.kind === 'vendor' && domain && results[e.result_id].domain === domain),\n    note: domainNote\n  });\n}\n\n// nothing kept: return one status item so the reasons are visible (dedupe skips items without a name)\nif (!kept.length) {\n  return [{ json: {\n    run_id: col.run_id,\n    force: 'substitute',\n    status: 'no_candidates',\n    extract_truncated: truncated,\n    ai_company_count: (parsed.companies || []).length,\n    f2_failed: failed,\n    f2_rejected_by_ai: parsed.rejected || []\n  } }];\n}\n// the log (failed + rejected) goes on the first item only\nreturn kept.map((k, i) => ({ json: i === 0 ? { ...k, extract_truncated: truncated, f2_failed: failed, f2_rejected_by_ai: parsed.rejected || [] } : k }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2736,
+        2320
+      ],
+      "id": "a16aca35-03c2-4602-85ea-46c2cf0f7265",
+      "name": "F2 check",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Definition: {{ $json.rival_definition }}\nCompany we analyse (never list it): {{ $json.company_name }} ({{ $json.domain }})\n\nSearch results:\n{{ $json.results_text }}",
+        "options": {
+          "systemMessage": "You read web search results and list the companies in them that are SUBSTITUTES for the company we analyse: they solve the same customer problem in a different way (outsourced service, module inside a bigger platform, other kind of software).\nUse ONLY the search results. Never add a company from your own knowledge.\n\nReturn ONLY one JSON object, no markdown:\n{\n  \"companies\": [\n    {\n      \"name\": \"company name exactly as written in the result\",\n      \"domain\": \"the company's own domain, ONLY if one of the results is on that domain, else null\",\n      \"fit\": \"direct\" or \"adjacent\",\n      \"what_they_do\": \"one sentence\",\n      \"evidence\": [{\"result_id\": \"R3\", \"quote\": \"words copied exactly from that result's title or snippet\"}]\n    }\n  ],\n  \"rejected\": [{\"name\": \"...\", \"reason\": \"...\"}]\n}\n\nRules:\n- direct = a clear substitute: an outsourced SERVICE that does the job for the buyer, or a MODULE inside a bigger platform (e.g. TMS, ERP, accounts payable or procurement suite) that does this job.\n- adjacent = only partly solves the problem (e.g. general BI, analytics or document capture tools).\n- A bigger platform that includes this job as one module is a SUBSTITUTE, never a direct competitor.\n- Direct competitors are ONLY standalone products of the same kind as the analysed company: put them in \"rejected\" with reason \"direct competitor\".\n- The substitute must serve the same buyers as the analysed company. Tools for other buyers (e.g. carriers, freight brokers) go in \"rejected\" with reason \"different buyer\".\n- Research firms, publishers and directories (Capterra, G2, F6S...) are never companies to list. Put them in \"rejected\".\n- Every company needs at least one evidence item. The quote must contain the company name or come from a result on the company's own domain, and must show what it does.\n- A list page (kind=list) can be evidence for several companies. A vendor page is evidence for the company that owns that domain.\n- Merge duplicates: one entry per company.\n\nSize limits:\n- At most 20 companies. Fill the list with the clearest SUBSTITUTES first.\n- Exactly 1 evidence item per company, quote at most 20 words.\n- \"what_they_do\": at most 12 words.\n- \"rejected\": names and a reason of at most 6 words. At most 10 entries."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        2368,
+        2320
+      ],
+      "id": "6d2b5bc8-c885-4805-aab3-bd12af44b150",
+      "name": "F2 extract"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Current year: {{ $now.year }}\n\nCompany profile:\n{{ $('Prepare profile').first().json.profile_text }}",
+        "options": {
+          "systemMessage": "You find NEW ENTRANTS (Porter's Five Forces) for the company in the profile.\nA new entrant is a company that recently entered this market or could easily enter it:\n- new startups in this product category (launched or funded in the last 3 years),\n- companies from an ADJACENT market that already serve the same buyers and are adding this capability,\n- large platforms that announce or launch this capability as a new feature.\nLong-established direct competitors are NOT new entrants.\nYour job is NOT to name companies. Your job is to write search instructions that will find them.\n\nReturn ONLY one JSON object, no markdown, no code fences, no commentary:\n{\n  \"rival_definition\": \"one sentence: what counts as a new entrant for this company\",\n  \"entrant_types\": [\n    {\"type\": \"short name\", \"from_market\": \"the adjacent market they come from, or 'new startup'\", \"why\": \"one sentence\"}\n  ],\n  \"perplexity_queries\": [\"3 to 4 web search queries in English about recent launches, new startups, funding or new features\"],\n  \"local_queries\": [\"2 to 3 queries in the local language of the focus market, or []\"],\n  \"company_search\": {\"keywords\": [\"2 to 5 keywords\"], \"industries\": [\"1 to 3\"], \"employee_min\": null, \"employee_max\": null, \"countries\": []},\n  \"based_on\": [\"profile fields you used\"],\n  \"scope_note\": \"one sentence\"\n}\n\nRules:\n- Use only the profile. Never use outside knowledge about this company.\n- 3 to 5 entrant types, each naming the market it comes from.\n- Queries must point at RECENT activity: use words like launches, new, startup, raises, funding, announces, and the current year or the year before.\n- Queries describe the capability and the buyer, never the company's own name or domain.\n- MARKET: the profile ends with a \"focus market\" line. Write queries for THAT market.\n- \"perplexity_queries\" are in English. You may name the market (e.g. \"Germany\", \"DACH\", \"Europe\") in at most one of them. The search tool already filters by country.\n- \"local_queries\": if the focus market line says \"Search in English and <language>\", write 2 to 3 queries in that language, with the words local buyers really search with (natural terms, not word-by-word translations of the English queries). Otherwise return [].\n- \"countries\" in company_search: copy the country codes from the focus market line. If the focus market is Global, return [].\n- Local queries also point at RECENT activity (e.g. in German: neu, Startup, Finanzierung, startet, plus the year)."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        1200,
+        2720
+      ],
+      "id": "9030c6f3-1744-44dc-bbfb-c0bd18bf5f43",
+      "name": "F3 plan"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "claude-sonnet-5",
+          "cachedResultName": "Claude Sonnet 5"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.6,
+      "position": [
+        1280,
+        2896
+      ],
+      "id": "a8637e8a-71d0-4789-81f2-3e6672a66181",
+      "name": "F3 chat model (plan)",
+      "credentials": {
+        "anthropicApi": {
+          "id": "REPLACE",
+          "name": "Anthropic"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "search",
+        "query": "={{ $json.query }}",
+        "options": {
+          "country": "={{ $json.country }}",
+          "searchLanguageFilter": "={{ $json.language_filter }}"
+        },
+        "requestOptions": {}
+      },
+      "type": "n8n-nodes-base.perplexity",
+      "typeVersion": 3,
+      "position": [
+        1904,
+        2720
+      ],
+      "id": "627fbe62-23dc-47c4-a23a-e583d3157284",
+      "name": "F3 perplexity",
+      "credentials": {
+        "perplexityApi": {
+          "id": "REPLACE",
+          "name": "Perplexity"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "search_jobs",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1.1,
+      "position": [
+        1728,
+        2720
+      ],
+      "id": "d82c7010-c9e3-4daf-beaa-e63c420a0200",
+      "name": "F3 split out"
+    },
+    {
+      "parameters": {
+        "jsCode": "// F3 - COLLECT RESULTS: merge all Perplexity searches into ONE list for the AI Agent\n// (Mode: Run Once for All Items, so the AI Agent after it runs once, not 5 times)\nconst plan = $('F3 validate').first().json;\nconst ownDomain = String(plan.domain || '').toLowerCase();\nconst MAX_SNIPPET = 1200;\nconst jobs = plan.search_jobs || [];\n// scope of the search that found a result: local (local language), market (English, in market), global (no country)\nconst scopeOf = qi => (jobs[qi] ? jobs[qi].scope + (jobs[qi].country ? ' ' + jobs[qi].country : '') : 'global');\n\nconst domainOf = url => {\n  const m = String(url || '').match(/^https?:\\/\\/([^\\/?#:]+)/i);\n  return m ? m[1].toLowerCase().replace(/^www\\./, '') : '';\n};\n\n// list pages name several competitors; vendor pages ARE a candidate company\nconst LIST_DOMAINS = ['capterra.', 'g2.com', 'softwareadvice.', 'getapp.', 'sourceforge.net', 'f6s.com', 'github.com', 'trustradius.com', 'gartner.com', 'saasworthy.com'];\nconst DROP_DOMAINS = ['marketintelo.com', 'dataintelo.com', 'marketsandmarkets.com', 'grandviewresearch.com', 'businesswire.com', 'prnewswire.com', 'linkedin.com', 'youtube.com', 'wikipedia.org'];\n\nfunction kindOf(r, dom) {\n  const t = (String(r.title || '') + ' ' + String(r.url || '')).toLowerCase();\n  if (dom === ownDomain || dom.endsWith('.' + ownDomain)) return 'own';\n  if (/\\.(gov|europa\\.eu)$/.test(dom) || dom.endsWith('europa.eu')) return 'drop';\n  if (DROP_DOMAINS.some(d => dom === d || dom.endsWith('.' + d))) return 'drop';\n  if (/market (size|research|report)|market-research|forecast report/.test(t)) return 'drop';\n  if (LIST_DOMAINS.some(d => dom.includes(d))) return 'list';\n  if (/\\b(best|top \\d+|top-\\d+|alternatives|vs\\.?|versus|compare|comparison|review)\\b/.test(t)) return 'list';\n  return 'vendor';\n}\n\nconst byUrl = new Map();\nconst dropped = [];\n$input.all().forEach((item, qi) => {\n  for (const r of (item.json.results || [])) {\n    if (!r || !r.url) continue;\n    const key = String(r.url).toLowerCase().replace(/[?#].*$/, '').replace(/\\/+$/, '');\n    if (byUrl.has(key)) { const e = byUrl.get(key); e.found_by_queries.push(qi + 1); if (!e.found_via.includes(scopeOf(qi))) e.found_via.push(scopeOf(qi)); continue; }\n    const dom = domainOf(r.url);\n    const kind = kindOf(r, dom);\n    if (kind === 'own' || kind === 'drop') { dropped.push({ url: r.url, reason: kind === 'own' ? 'own site' : 'report/news/official page' }); continue; }\n    byUrl.set(key, {\n      kind, domain: dom, title: String(r.title || '').trim(), url: r.url,\n      snippet: String(r.snippet || '').replace(/\\s+/g, ' ').trim().slice(0, MAX_SNIPPET),\n      found_by_queries: [qi + 1],\n      found_via: [scopeOf(qi)]\n    });\n  }\n});\n\nconst results = [...byUrl.values()].map((r, i) => ({ id: 'R' + (i + 1), ...r }));\nconst results_text = results.map(r =>\n  '[' + r.id + '] kind=' + r.kind + ' | domain=' + r.domain + ' | found via: ' + r.found_via.join(', ') + ' | ' + r.title + ' | ' + r.url + '\\n' + r.snippet\n).join('\\n\\n');\n\nreturn [{ json: {\n  run_id: plan.run_id,\n  domain: plan.domain,\n  company_name: plan.company_name,\n  force: 'new_entrant',\n  rival_definition: plan.rival_definition,\n  market: plan.market,\n  result_count: results.length,\n  vendor_pages: results.filter(r => r.kind === 'vendor').length,\n  list_pages: results.filter(r => r.kind === 'list').length,\n  results,\n  results_text,\n  dropped\n} }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2128,
+        2720
+      ],
+      "id": "a20d8fee-6780-46e0-a00a-33a3bf68ffa8",
+      "name": "F3 collect results"
+    },
+    {
+      "parameters": {
+        "jsCode": "// F3 VALIDATE new entrant PLAN: parse the plan, enforce the rules, build one search job per query (with country + language)\nconst prof = $('Prepare profile').first().json;\nconst raw = String($input.first().json.output || '').trim();\n\n// parse (same repair as Check quotes: code fences and trailing commas)\nconst jsonText = raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1);\nlet plan;\ntry { plan = JSON.parse(jsonText); }\ncatch (e1) {\n  try { plan = JSON.parse(jsonText.replace(/,\\s*([}\\]])/g, '$1')); }\n  catch (e2) { throw new Error('F3 plan did not return valid JSON: ' + raw.slice(0, 300)); }\n}\n\nconst issues = [];\nconst asList = v => (Array.isArray(v) ? v : []).map(x => String(x || '').trim()).filter(Boolean);\n\n// 1. Queries: no own name or domain, no duplicates, sensible length, max 5\nconst own = [prof.company_name, prof.domain, String(prof.domain || '').split('.')[0]]\n  .filter(Boolean).map(s => String(s).toLowerCase());\nconst seen = new Set();\nconst queries = [];\nfor (const q of asList(plan.perplexity_queries)) {\n  const lq = q.toLowerCase();\n  const hitsOwn = own.some(o => o.length >= 3 && new RegExp('\\\\b' + o.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&') + '\\\\b').test(lq));\n  if (hitsOwn) { issues.push('dropped query with own name: ' + q); continue; }\n  if (q.length < 10 || q.length > 200) { issues.push('dropped query (length): ' + q); continue; }\n  if (seen.has(lq)) continue;\n  seen.add(lq);\n  queries.push(q);\n}\nif (queries.length > 4) { issues.push('cut English queries to 4'); queries.length = 4; }\nif (queries.length < 2) throw new Error('New entrant plan has fewer than 2 usable queries: ' + JSON.stringify(plan.perplexity_queries));\n\n// 2. Company search filters\nconst cs = plan.company_search || {};\nlet min = Number.isFinite(cs.employee_min) ? cs.employee_min : null;\nlet max = Number.isFinite(cs.employee_max) ? cs.employee_max : null;\nif (min !== null && max !== null && min > max) { [min, max] = [max, min]; issues.push('swapped employee_min/max'); }\nconst company_search = {\n  keywords: asList(cs.keywords).slice(0, 5),\n  industries: asList(cs.industries).slice(0, 3),\n  employee_min: min,\n  employee_max: max,\n  countries: asList(cs.countries)\n};\nif (!company_search.keywords.length) throw new Error('New entrant plan has no company_search keywords');\n\n// 4. MARKET: countries and search jobs come from the focus market (form), not from profile.regions\nconst mk = prof.market || { focus: 'Global', label: 'Global', countries: [], languages: [], local_language: '', include_global: true };\nconst LANG_CODE = { German: 'de', French: 'fr', Dutch: 'nl', Swedish: 'sv', Spanish: 'es', Polish: 'pl', Italian: 'it', Portuguese: 'pt', Japanese: 'ja' };\nconst localCode = LANG_CODE[mk.local_language] || '';\nconst C = Array.isArray(mk.countries) ? mk.countries : [];\ncompany_search.countries = C.slice();\n\n// local-language queries (only when the market has a local language)\nconst local_queries = [];\nif (localCode) {\n  for (const q of asList(plan.local_queries)) {\n    const lq = q.toLowerCase();\n    const hitsOwn = own.some(o => o.length >= 3 && new RegExp('\\\\b' + o.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&') + '\\\\b').test(lq));\n    if (hitsOwn) { issues.push('dropped local query with own name: ' + q); continue; }\n    if (q.length < 6 || q.length > 200) { issues.push('dropped local query (length): ' + q); continue; }\n    if (seen.has(lq)) continue;\n    seen.add(lq);\n    local_queries.push(q);\n  }\n  if (local_queries.length > 3) { issues.push('cut local queries to 3'); local_queries.length = 3; }\n  if (!local_queries.length) issues.push('no usable ' + mk.local_language + ' queries from the plan');\n}\n\n// one item per search: English in the main market, local language rotated over the market countries,\n// plus one global search (no country) when global players should be included\nconst search_jobs = [];\nif (!C.length) {\n  queries.forEach(q => search_jobs.push({ query: q, country: '', language_filter: '', scope: 'global' }));\n} else {\n  queries.forEach(q => search_jobs.push({ query: q, country: C[0], language_filter: (mk.languages || []).join(','), scope: 'market' }));\n  local_queries.forEach((q, i) => search_jobs.push({ query: q, country: C[i % C.length], language_filter: localCode, scope: 'local' }));\n  if (mk.include_global && queries.length) search_jobs.push({ query: queries[0], country: '', language_filter: '', scope: 'global' });\n}\n\nreturn [{ json: {\n  run_id: prof.run_id,\n  domain: prof.domain,\n  company_name: prof.company_name,\n  force: 'new_entrant',\n  rival_definition: String(plan.rival_definition || ''),\n  category_keywords: asList(plan.category_keywords),\n  perplexity_queries: queries,\n  local_queries,\n  search_jobs,\n  market: mk,\n  company_search,\n  based_on: asList(plan.based_on),\n  entrant_types: Array.isArray(plan.entrant_types) ? plan.entrant_types : [],\n  scope_note: String(plan.scope_note || ''),\n  issues\n} }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1504,
+        2720
+      ],
+      "id": "ae19f645-8767-42d1-ae94-6c66a8dba329",
+      "name": "F3 validate"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "claude-sonnet-5",
+          "cachedResultName": "Claude Sonnet 5"
+        },
+        "options": {
+          "maxTokensToSample": 16000,
+          "temperature": 0
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.6,
+      "position": [
+        2352,
+        2880
+      ],
+      "id": "a4157934-b6f1-411d-b3f9-9c37b56aa39e",
+      "name": "F3 chat model (extract)",
+      "credentials": {
+        "anthropicApi": {
+          "id": "REPLACE",
+          "name": "Anthropic"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// F3 CHECK: keep only companies whose evidence really appears in the search results\n// Output: one item per verified competitor (ready for Merge 1)\nconst col = $('F3 collect results').first().json;\nconst out = $input.first().json;\nconst raw = String(out.output || out.text || '').trim();\n\nconst jsonText = raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1);\nlet parsed;\ntry { parsed = JSON.parse(jsonText); }\ncatch (e1) {\n  try { parsed = JSON.parse(jsonText.replace(/,\\s*([}\\]])/g, '$1')); }\n  catch (e2) { throw new Error('F3 extract did not return valid JSON (maybe cut off - check max tokens): ' + raw.slice(-200)); }\n}\n\nconst norm = s => String(s || '').toLowerCase()\n  .replace(/[‘’]/g, \"'\").replace(/[“”]/g, '\"').replace(/[–—]/g, '-')\n  .replace(/[*_#>`\\[\\]()|]/g, ' ').replace(/\\s+/g, ' ').trim();\nconst coreName = s => norm(s).replace(/\\.(com|ai|io|de|co|net)$/, '')\n  .replace(/\\b(technologies|technology|software|systems|inc|ltd|gmbh|group|logistics|solutions)\\b/g, '').replace(/\\s+/g, ' ').trim();\n\nconst results = {};\nfor (const r of col.results || []) results[r.id] = { ...r, text: norm(r.title + ' ' + r.snippet + ' ' + r.url) };\nconst knownDomains = new Set((col.results || []).map(r => r.domain));\nconst ownDomain = String(col.domain || '').toLowerCase();\nconst ownName = coreName(col.company_name);\n\n// a quote may contain \"...\" where the model skipped words: every part must be found\nconst quoteFound = (quote, r) => {\n  const parts = String(quote || '').split(/\\.\\.\\.|…/).map(norm).filter(p => p.length >= 8);\n  return parts.length > 0 && parts.every(p => r.text.includes(p));\n};\n\nconst kept = [];\nconst failed = [];\nfor (const c of parsed.companies || []) {\n  const name = String(c.name || '').trim();\n  if (!name) continue;\n  let domain = c.domain ? String(c.domain).toLowerCase().replace(/^https?:\\/\\//, '').replace(/^www\\./, '').replace(/\\/.*$/, '') : null;\n\n  if (domain && (domain === ownDomain || domain.endsWith('.' + ownDomain)) || coreName(name) === ownName) {\n    failed.push({ name, reason: 'is the analysed company' }); continue;\n  }\n  // a claimed domain must belong to one of the search results; otherwise leave it for enrichment\n  const domainNote = domain && !knownDomains.has(domain) ? 'domain not in results, cleared' : null;\n  if (domainNote) domain = null;\n\n  const cn = coreName(name);\n  const goodEvidence = [];\n  for (const ev of c.evidence || []) {\n    const r = results[ev.result_id];\n    if (!r) continue;\n    if (!quoteFound(ev.quote, r)) continue;\n    // the result must be about this company: its own domain, or the name appears in the result\n    const aboutCompany = (domain && r.domain === domain) || (cn.length >= 3 && r.text.includes(cn));\n    if (!aboutCompany) continue;\n    goodEvidence.push({ result_id: ev.result_id, quote: ev.quote, url: r.url, kind: r.kind });\n  }\n  if (!goodEvidence.length) { failed.push({ name, reason: 'no evidence found in the results' }); continue; }\n\n  kept.push({\n    run_id: col.run_id,\n    analysed_domain: col.domain,\n    force: 'new_entrant',\n    tool: 'perplexity',\n    name,\n    domain,\n    fit: c.fit === 'adjacent' ? 'adjacent' : 'direct',\n    what_they_do: String(c.what_they_do || ''),\n    evidence: goodEvidence,\n    from_own_site: goodEvidence.some(e => e.kind === 'vendor' && domain && results[e.result_id].domain === domain),\n    note: domainNote\n  });\n}\n\n// nothing kept: return one status item so the reasons are visible (dedupe skips items without a name)\nif (!kept.length) {\n  return [{ json: {\n    run_id: col.run_id,\n    force: 'new_entrant',\n    status: 'no_candidates',\n    ai_company_count: (parsed.companies || []).length,\n    f3_failed: failed,\n    f3_rejected_by_ai: parsed.rejected || []\n  } }];\n}\n// the log (failed + rejected) goes on the first item only\nreturn kept.map((k, i) => ({ json: i === 0 ? { ...k, f3_failed: failed, f3_rejected_by_ai: parsed.rejected || [] } : k }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2720,
+        2720
+      ],
+      "id": "9f05895f-329c-44fb-b8c5-7cd78b4714a9",
+      "name": "F3 check",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Definition: {{ $json.rival_definition }}\nCompany we analyse (never list it): {{ $json.company_name }} ({{ $json.domain }})\n\nSearch results:\n{{ $json.results_text }}",
+        "options": {
+          "systemMessage": "You read web search results and list the companies in them that are NEW ENTRANTS for the company we analyse: they recently entered this market or are moving into it.\nUse ONLY the search results. Never add a company from your own knowledge.\n\nReturn ONLY one JSON object, no markdown:\n{\n  \"companies\": [\n    {\n      \"name\": \"company name exactly as written in the result\",\n      \"domain\": \"the company's own domain, ONLY if one of the results is on that domain, else null\",\n      \"fit\": \"direct\" or \"adjacent\",\n      \"what_they_do\": \"one sentence\",\n      \"evidence\": [{\"result_id\": \"R3\", \"quote\": \"words copied exactly from that result's title or snippet\"}]\n    }\n  ],\n  \"rejected\": [{\"name\": \"...\", \"reason\": \"...\"}]\n}\n\nRules:\n- direct = clear evidence of entering: a new startup in the category, or a company that launched, announced or added this capability recently. The quote must show the launch, the new feature, the funding or that it is new.\n- adjacent = serves the same buyers with a related product and could plausibly add this capability, but the result shows no entry yet.\n- Long-established direct competitors with no recent move are NOT new entrants: put them in \"rejected\" with reason \"established competitor\".\n- Tools for unrelated jobs go in \"rejected\".\n- Research firms, publishers and directories (Capterra, G2, F6S...) are never companies to list. Put them in \"rejected\".\n- Every company needs at least one evidence item. The quote must contain the company name or come from a result on the company's own domain, and must show what it does.\n- A list page (kind=list) can be evidence for several companies. A vendor page is evidence for the company that owns that domain.\n- Merge duplicates: one entry per company.\n- The entrant must target the same buyers as the analysed company. Companies built for other buyers (e.g. freight forwarders, brokers, carriers, customs) go in \"rejected\" with reason \"different buyer\".\nSize limits:\n- At most 20 companies. If there are more, keep the clearest ones.\n- At most 2 evidence items per company, each quote at most 25 words.\n- \"rejected\": names and a reason of at most 6 words. At most 15 entries."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        2352,
+        2720
+      ],
+      "id": "4d86d200-d4bc-41d1-a28d-62eb6ba1ace3",
+      "name": "F3 extract"
+    },
+    {
+      "parameters": {
+        "jsCode": "// BUILD DATASET: one row per company across F1 (rivalry), F2 (substitute), F3 (new_entrant)\n// Cross-references the same company by main domain or by cleaned name. Nothing is removed:\n// every force, quote and recent move is kept on the company's row.\nconst FORCE_ORDER = ['rivalry', 'substitute', 'new_entrant'];\nconst items = $input.all().map(i => i.json).filter(j => j && j.name);   // skips empty / no_candidates items\n\n// main domain: news.trimble.com -> trimble.com, but intelipost.com.br stays\nconst TWO_PART_TLDS = ['co.uk', 'com.br', 'com.au', 'co.jp', 'com.mx', 'co.in', 'com.tr', 'co.za', 'com.cn', 'com.sg'];\nconst rootDomain = d => {\n  if (!d) return null;\n  const host = String(d).toLowerCase().replace(/^https?:\\/\\//, '').replace(/^www\\./, '').replace(/[\\/?#].*$/, '');\n  const parts = host.split('.');\n  const lastTwo = parts.slice(-2).join('.');\n  return TWO_PART_TLDS.includes(lastTwo) ? parts.slice(-3).join('.') : lastTwo;\n};\n// cleaned name: \"Trax Technologies\" -> \"trax\", \"Freehand.ai\" -> \"freehand\"\nconst nameKey = n => String(n || '').toLowerCase()\n  .replace(/\\.(com|ai|io|de|co|net|app)\\b/g, ' ')\n  .replace(/[^a-z0-9 ]+/g, ' ')\n  .replace(/\\b(technologies|technology|software|systems|information|inc|ltd|llc|gmbh|ag|group|solutions|the)\\b/g, ' ')\n  .replace(/\\s+/g, ' ').trim();\n\n// 1. link hits that belong to the same company (union-find)\nconst parent = items.map((_, i) => i);\nconst find = i => (parent[i] === i ? i : (parent[i] = find(parent[i])));\nconst union = (a, b) => { parent[find(a)] = find(b); };\nconst byDomain = {}, byName = {};\nitems.forEach((it, i) => {\n  const d = rootDomain(it.domain);\n  const k = nameKey(it.name);\n  if (d) { if (byDomain[d] !== undefined) union(i, byDomain[d]); else byDomain[d] = i; }\n  if (k.length >= 3) { if (byName[k] !== undefined) union(i, byName[k]); else byName[k] = i; }\n});\n\n// 2. build one row per group\nconst groups = {};\nitems.forEach((it, i) => { const g = find(i); (groups[g] = groups[g] || []).push(it); });\n\nconst rows = Object.values(groups).map(hits => {\n  hits.sort((a, b) => FORCE_ORDER.indexOf(a.force) - FORCE_ORDER.indexOf(b.force));\n  const forces = FORCE_ORDER.filter(f => hits.some(h => h.force === f));\n  const domains = [...new Set(hits.map(h => rootDomain(h.domain)).filter(Boolean))];\n  const names = [...new Set(hits.map(h => h.name))];\n  // display name: the shortest name that was seen (usually the brand)\n  const name = names.slice().sort((a, b) => a.length - b.length)[0];\n\n  const fit_by_force = {};\n  for (const f of forces) fit_by_force[f] = hits.filter(h => h.force === f).some(h => h.fit === 'direct') ? 'direct' : 'adjacent';\n\n  const seenQuote = new Set();\n  const evidence = [];\n  for (const h of hits) for (const e of h.evidence || []) {\n    const key = String(e.quote).toLowerCase();\n    if (seenQuote.has(key)) continue;\n    seenQuote.add(key);\n    evidence.push({ force: h.force, quote: e.quote, url: e.url, kind: e.kind });\n  }\n  const recent_moves = evidence.filter(e => e.force === 'new_entrant');\n\n  return {\n    run_id: hits[0].run_id,\n    analysed_domain: hits[0].analysed_domain,\n    name,\n    other_names: names.filter(n => n !== name),\n    domain: domains[0] || null,\n    other_domains: domains.slice(1),\n    forces,                                   // every force the company was found under\n    force_count: forces.length,\n    display_group: forces[0],                 // only for the report layout\n    fit_by_force,\n    any_direct: Object.values(fit_by_force).includes('direct'),\n    what_they_do: hits[0].what_they_do,\n    hits: hits.length,\n    evidence,\n    recent_moves,\n    from_own_site: hits.some(h => h.from_own_site),\n    needs_domain: domains.length === 0,       // Clay enrichment finds the domain later\n    status: 'candidate'\n  };\n});\n\nrows.sort((a, b) => b.force_count - a.force_count || b.hits - a.hits || a.name.localeCompare(b.name));\n\n// Airtable-friendly text versions of the lists\nconst out = rows.map(r => ({\n  ...r,\n  forces_text: r.forces.join(', '),\n  evidence_text: r.evidence.map(e => '[' + e.force + '] \"' + e.quote + '\" - ' + e.url).join('\\n'),\n  recent_moves_text: r.recent_moves.map(e => '\"' + e.quote + '\" - ' + e.url).join('\\n'),\n  other_names_text: r.other_names.join(', ')\n}));\n\nconst summary = {\n  hits_in: items.length,\n  companies_out: out.length,\n  merged: items.length - out.length,\n  by_force: Object.fromEntries(FORCE_ORDER.map(f => [f, out.filter(r => r.forces.includes(f)).length])),\n  found_by_2_or_more: out.filter(r => r.force_count >= 2).map(r => r.name),\n  without_domain: out.filter(r => r.needs_domain).map(r => r.name)\n};\n\nreturn out.map((r, i) => ({ json: i === 0 ? { ...r, run_summary: summary } : r }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3584,
+        2688
+      ],
+      "id": "3d6b64f3-1acf-42d4-8f41-31cfeb260bc1",
+      "name": "Build dataset"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=ANALYSED COMPANY\n{{ $json.profile_text }}\n\nCANDIDATE\n{{ $json.judge_text }}",
+        "options": {
+          "systemMessage": "You check whether a candidate company really belongs in a competitor analysis (Porter's Five Forces) of the analysed company.\nYou get two kinds of facts about the candidate: COMPANY DATA (from a company database) and SEARCH EVIDENCE (quotes from web pages).\nJudge ONLY from these facts. Never use your own knowledge about either company.\n\nStep 1. Decide what the candidate mainly sells.\n- Use COMPANY DATA first: the description and keywords describe the company's main business.\n- business_type: \"software\" (sells software or a SaaS platform), \"service\" (does the work for clients, e.g. audit or outsourcing services), \"logistics_provider\" (moves, stores or ships goods), \"consultancy\" (advice and projects), \"other\".\n- main_product: what it mainly sells, in max 8 words.\n- job_focus: how central is the analysed company's job (the customer problem it solves) to the candidate's business? \"core\" (it is the candidate's main business), \"major_module\" (a main module or service line that the candidate markets on its own), \"minor_feature\" (one feature among many).\n- same_main_job: is main_product the same kind of product as the analysed company's main product? \"yes\", \"partly\" (it is one module or one use case of a broader product) or \"no\".\n\nStep 2. Judge ALL THREE forces for every candidate. \"Found under forces\" only tells you where the search found it; the candidate may fit a different force.\n- rivalry: its MAIN product is the same kind of product as the analysed company's, for the same kind of buyer. Test: would the buyer compare both products in the same purchase decision? Then it is rivalry, even if it is built on a different technology or delivered differently (e.g. as an add-on for an ERP).\n- substitute: it solves the same customer problem with a different KIND of solution: an outsourced service that does the work, a module inside a bigger platform bought for another main reason (e.g. a TMS or ERP), or another kind of tool. The facts must show THIS problem, not just the same industry.\n- new_entrant: it recently entered or is moving into the analysed company's market (new startup, launch or funding for this purpose), for the same kind of buyer.\n- A candidate can be true for more than one force, but rivalry and substitute exclude each other: a company is either the same kind of product (rivalry) or a different kind of solution (substitute).\n\nStep 3. Customer segment: does the candidate sell to the same KIND and SIZE of customer as the analysed company? Answer in \"segment_match\".\n- Use only what is STATED: the analysed company's buyer industries, buyer size and named customers; the candidate's stated target customers, named customers, integrations (e.g. \"add-on for SAP\", \"for Shopify stores\") and wording (e.g. \"for global enterprises\", \"for growing e-commerce brands\").\n- \"same\": both clearly target the same kind of customer.\n- \"different\": the candidate clearly targets another kind or size of customer. ONLY with a quote from the candidate's facts that shows it.\n- \"unclear\": anything else. This is the default. Do not guess a size from a company name.\n- segment_basis: \"buyer_type\" if the difference is the kind of customer (e.g. freight forwarders instead of shippers), \"buyer_size\" if it is the size (e.g. Fortune 500 instead of small brands).\n- Never assume the analysed company's customer size. Use it only if its profile states buyer_company_size.\n- Serving additional customer types is NOT different: a candidate that serves shippers AND carriers still serves shippers.\n\nVerdicts:\n- \"true\": the facts clearly show it.\n- \"false\": the facts show a different main product, a different job or a different buyer. Being in the same industry is NOT enough: a company whose main business is a different job is \"false\", even if one web page mentions a related topic.\n- \"unsure\": the facts are too thin or contradict each other (e.g. no company data and only one generic quote).\n\nIf COMPANY DATA and SEARCH EVIDENCE disagree about what the company does, trust COMPANY DATA for the main business and use \"unsure\" unless the evidence clearly shows a product for this job.\n\nReturn ONLY one JSON object, no markdown:\n{\n  \"business_type\": \"software\" | \"service\" | \"logistics_provider\" | \"consultancy\" | \"other\",\n  \"main_product\": \"max 8 words\",\n  \"same_main_job\": \"yes\" | \"partly\" | \"no\",\n  \"buyer_match\": \"yes\" | \"no\" | \"unclear\",\n  \"job_focus\": \"core\" | \"major_module\" | \"minor_feature\",\n  \"segment_match\": \"same\" | \"different\" | \"unclear\",\n  \"segment_basis\": \"buyer_type\" | \"buyer_size\" | null,\n  \"segment_reason\": \"who the candidate serves, max 15 words\",\n  \"segment_quote\": \"a quote copied word for word from the candidate's facts, or null\",\n  \"judgements\": [\n    {\"force\": \"rivalry\" | \"substitute\" | \"new_entrant\", \"verdict\": \"true\" | \"false\" | \"unsure\", \"reason\": \"one sentence, max 20 words\", \"based_on\": \"a quote copied word for word from COMPANY DATA or SEARCH EVIDENCE, or null\"}\n  ]\n}\n\nRules:\n- Exactly three judgements: rivalry, substitute and new_entrant.\n- \"based_on\" is required for every \"true\" verdict and must be copied exactly from the facts above (max 30 words).\n- buyer_match is about the TYPE of buyer only (e.g. shippers vs freight forwarders vs carriers), never about size. \"yes\" if the candidate sells to the same type of buyer, also when it sells to other types too. \"no\" only if it clearly sells to a different type of buyer. Size belongs to segment_match.\n- If buyer_match is \"no\", every verdict is \"false\".\n- A big platform that only partly does the job is \"true\" for substitute only if the facts show this job."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        4768,
+        2896
+      ],
+      "id": "f0c1656e-ccef-41bf-a389-29109d9de100",
+      "name": "AI Agent2",
+      "retryOnFail": true,
+      "maxTries": 2
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "claude-sonnet-5",
+          "cachedResultName": "Claude Sonnet 5"
+        },
+        "options": {
+          "maxTokensToSample": 16000,
+          "temperature": 0
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.6,
+      "position": [
+        4768,
+        3120
+      ],
+      "id": "97d6e4ca-8356-422c-a7e7-d7ddee50ea10",
+      "name": "Anthropic Chat Model3",
+      "credentials": {
+        "anthropicApi": {
+          "id": "REPLACE",
+          "name": "Anthropic"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "https://api.apollo.io/api/v1/organizations/enrich",
+        "sendQuery": true,
+        "specifyQuery": "json",
+        "jsonQuery": "={{ JSON.stringify(Object.fromEntries(Object.entries({ domain: $json.fields.domain, name: $json.fields.name }).filter(([k, v]) => v))) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "accept",
+              "value": "application/json"
+            },
+            {
+              "name": "Cache-Control",
+              "value": "no-cache"
+            }
+          ]
+        },
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 5
+            }
+          }
+        },
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "apolloApi"
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4096,
+        2896
+      ],
+      "name": "Apollo enrich",
+      "id": "61346d4b-e271-4c98-bf63-5ab12cb9610f",
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "apolloApi": {
+          "id": "REPLACE",
+          "name": "Apollo"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "let src;\ntry { src = $('Create a record1').item.json; }\ncatch (e) { src = $('Create a record1').all()[$itemIndex].json; }\nconst f = src.fields || {};\nconst o = $json.organization || null;\nconst norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');\nconst https = u => u ? String(u).replace(/^http:\\/\\//, 'https://') : undefined;\nconst day = d => d ? String(d).slice(0, 10) : undefined;\n\nconst out = { id: src.id, enriched: true };\n\nif (!o || !o.name) {\n  out.needs_domain = !f.domain;\n  out.enrich_note = 'Apollo: no match';\n  return { json: out };\n}\n\n// Name-only lookups: name must match AND industry + description must fit\nif (!f.domain) {\n  const a = norm(o.name), b = norm(f.name);\n  const nameOk = a.includes(b) || b.includes(a);\n  const INDUSTRIES = ['logistics & supply chain', 'computer software', 'information technology & services', 'internet', 'transportation/trucking/railroad', 'financial services'];\n  const industryOk = INDUSTRIES.includes(String(o.industry || '').toLowerCase());\n  const topicOk = industryOk && /freight|logistic|shipping|shipper|carrier|supply chain|tms/.test(String(o.short_description || '').toLowerCase());\n  if (!nameOk || !topicOk) {\n    out.needs_domain = true;\n    out.enrich_note = `Name-only match rejected: Apollo found \"${o.name}\" (${o.industry || 'no industry'})`;\n    return { json: out };\n  }\n  out.domain = o.primary_domain;\n  out.enrich_note = 'Domain found by name, check once';\n}\n\nconst dept = o.departmental_head_count || {};\nconst parent = (o.owned_by_organization && o.owned_by_organization.name)\n  || (o.ultimate_parent_organization && o.ultimate_parent_organization.name);\nconst rounds = (o.funding_events || [])\n  .map(e => [day(e.date), e.type, e.amount ? `${e.amount} ${e.currency || ''}`.trim() : null, e.investors ? `(${e.investors})` : null].filter(Boolean).join(' '))\n  .join('\\n');\n\nObject.assign(out, {\n  needs_domain: false,\n  apollo_id: o.id,\n  apollo_name: o.name,\n  apollo_description: o.short_description,\n  website_url: https(o.website_url),\n  logo_url: o.logo_url,\n  linkedin_url: https(o.linkedin_url),\n  crunchbase_url: https(o.crunchbase_url),\n  hq_country: o.country,\n  hq_city: o.city,\n  industry: o.industry,\n  keywords_text: (o.keywords || []).join(', '),\n  employees: o.estimated_num_employees,\n  founded_year: o.founded_year,\n  headcount_growth_6m: o.organization_headcount_six_month_growth,\n  headcount_growth_12m: o.organization_headcount_twelve_month_growth,\n  headcount_growth_24m: o.organization_headcount_twenty_four_month_growth,\n  sales_headcount: dept.sales,\n  engineering_headcount: dept.engineering,\n  funding_total: o.total_funding_printed,\n  funding_total_usd: o.total_funding,\n  last_funding_stage: o.latest_funding_stage,\n  last_funding_date: day(o.latest_funding_round_date),\n  funding_rounds_text: rounds,\n  revenue: o.organization_revenue_printed || o.annual_revenue_printed,\n  parent_company: parent,\n  public_ticker: o.publicly_traded_symbol,\n});\n\nfor (const k of Object.keys(out)) if (out[k] === null || out[k] === undefined || out[k] === '') delete out[k];\nreturn { json: out };"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4320,
+        2896
+      ],
+      "id": "da641a0c-078a-4351-b67f-d5c38a6f6648",
+      "name": "Code in JavaScript2"
+    },
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -64,
+        2704
+      ],
+      "id": "dfa7aa90-952f-4c4f-9aa1-5017e5e01f3a",
+      "name": "When Executed by Another Workflow"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_STAGE_2_2_WORKFLOW_ID",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.4,
+      "position": [
+        5680,
+        2880
+      ],
+      "id": "b6c8e038-c20e-476e-a2ae-80fe44d5e6ca",
+      "name": "Call 'stage 2.2'"
+    },
+    {
+      "parameters": {
+        "content": "# F1",
+        "height": 336,
+        "width": 1728,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        1184,
+        1872
+      ],
+      "typeVersion": 1,
+      "id": "cebfaeee-c355-4e76-8f4b-83545b930fc7",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "jsCode": "// JUDGE INPUT: one item per company with everything the judge may use (search evidence + Apollo data)\n// Mode: Run Once for All Items. Connect: Code in JavaScript2 -> Judge input -> AI Agent2\nconst MAX_EVIDENCE = 8;     // quotes per company sent to the judge (keeps tokens low)\nconst MAX_DESC = 900;       // characters of the Apollo description\nconst MAX_KEYWORDS = 30;    // Apollo keywords\n// fields that go on to Update record (the Apollo enrichment); everything else is dropped\nconst KEEP = ['id', 'enriched', 'needs_domain', 'enrich_note', 'domain', 'apollo_id', 'apollo_name', 'apollo_description',\n  'website_url', 'logo_url', 'linkedin_url', 'crunchbase_url', 'hq_country', 'hq_city', 'industry', 'keywords_text',\n  'employees', 'founded_year', 'headcount_growth_6m', 'headcount_growth_12m', 'headcount_growth_24m', 'sales_headcount',\n  'engineering_headcount', 'funding_total', 'funding_total_usd', 'last_funding_stage', 'last_funding_date',\n  'funding_rounds_text', 'revenue', 'parent_company', 'public_ticker'];\n\n// the created Airtable rows hold name, forces and search evidence\n// (test mode: if Create a record1 did not run, rows from an Airtable search are used directly)\nconst created = {};\ntry { for (const it of $('Create a record1').all()) created[it.json.id] = it.json.fields || {}; } catch (e) {}\n\n// profile of the analysed company: from Prepare profile in a normal run, from TEST load profile in a test\nlet profile_text = '';\ntry { profile_text = $('Prepare profile').first().json.profile_text; } catch (e) {}\nif (!profile_text) {\n  try {\n    const pr = $('TEST load profile').first().json;\n    const pf = pr.fields || pr;\n    const raw = JSON.parse(pf.profile_json || '{}');\n    const show = v => Array.isArray(v) ? v.map(x => (x && typeof x === 'object') ? x.item : x).join('; ') : String(v);\n    profile_text = Object.keys(raw)\n      .filter(k => raw[k] && raw[k].value !== null && raw[k].value !== '' && !(Array.isArray(raw[k].value) && !raw[k].value.length))\n      .map(k => k + ': ' + show(raw[k].value)).join('\\n');\n  } catch (e) {}\n}\nif (!profile_text) throw new Error('No company profile: run Prepare profile (normal run) or TEST load profile (test)');\n\nconst clip = (s, n) => {\n  const t = String(s || '').replace(/\\s+/g, ' ').trim();\n  return t.length > n ? t.slice(0, n) + '...' : t;\n};\n\nreturn $input.all().map(i => {\n  const a = i.json.fields ? Object.assign({ id: i.json.id }, i.json.fields) : i.json;\n  const c = created[a.id] || a;\n  const evidence = String(c.evidence_text || '').split('\\n').map(s => s.trim()).filter(Boolean).slice(0, MAX_EVIDENCE);\n  const keywords = String(a.keywords_text || '').split(',').map(s => s.trim()).filter(Boolean).slice(0, MAX_KEYWORDS).join(', ');\n\n  const apolloLines = a.apollo_id ? [\n    'Apollo name: ' + (a.apollo_name || ''),\n    'Industry: ' + (a.industry || 'unknown'),\n    'Employees: ' + (a.employees || 'unknown'),\n    'HQ: ' + ([a.hq_city, a.hq_country].filter(Boolean).join(', ') || 'unknown'),\n    'Description: ' + clip(a.apollo_description, MAX_DESC),\n    'Keywords: ' + (keywords || 'none')\n  ] : ['No company data found (' + (a.enrich_note || 'Apollo: no match') + '). Judge from the search evidence only.'];\n\n  const judge_text = [\n    'Name: ' + (c.name || a.apollo_name || ''),\n    'Domain: ' + (a.domain || c.domain || 'unknown'),\n    'Found under forces: ' + (c.forces_text || ''),\n    'Summary from search: ' + clip(c.what_they_do, 400),\n    '',\n    'COMPANY DATA (Apollo)',\n    ...apolloLines,\n    '',\n    'SEARCH EVIDENCE (quotes from web pages)',\n    ...(evidence.length ? evidence : ['none'])\n  ].join('\\n');\n\n  // pass on ONLY the record id and the enrichment fields; no old verdicts, scores or reasons travel with the item\n  const out = {};\n  for (const k of KEEP) if (a[k] !== undefined && a[k] !== null && a[k] !== '') out[k] = a[k];\n  return { json: Object.assign(out, { name: c.name || a.apollo_name || '', forces_text: c.forces_text || '', profile_text, judge_text }) };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4544,
+        2896
+      ],
+      "id": "1624f5bf-5631-4ec9-8f0c-626a6a400143",
+      "name": "Judge input"
+    },
+    {
+      "parameters": {
+        "jsCode": "// PARSE VERDICT: pairs each judge answer with its company, checks the quote, builds the Airtable update\n// Mode: Run Once for All Items. Connect: AI Agent2 -> Parse verdict -> Update record\nconst STRICT = true; // true: a \"true\" verdict with buyer \"unclear\" becomes \"unsure\"\n\nconst inputs = $('Judge input').all().map(i => i.json);\nconst answers = $input.all().map(i => i.json);\nif (inputs.length !== answers.length) {\n  throw new Error('Count mismatch: ' + inputs.length + ' companies vs ' + answers.length + ' judge answers');\n}\n\nconst FORCES = ['rivalry', 'substitute', 'new_entrant'];\nconst TYPES = ['software', 'service', 'logistics_provider', 'consultancy', 'other'];\n\nconst norm = s => String(s || '').toLowerCase()\n  .replace(/[‘’]/g, \"'\").replace(/[“”\"]/g, '').replace(/[–—]/g, '-')\n  .replace(/https?:\\/\\/\\S+/g, ' ').replace(/[*_#>`\\[\\]()|\\\\]/g, ' ')\n  .replace(/\\s+/g, ' ').trim();\n\nconst parseJudge = raw => {\n  const s = String(raw || '').replace(/```json|```/g, '').trim();\n  const a = s.indexOf('{'), b = s.lastIndexOf('}');\n  if (a < 0 || b < 0) return null;\n  const txt = s.slice(a, b + 1);\n  try { return JSON.parse(txt); } catch (e) {}\n  try { return JSON.parse(txt.replace(/,\\s*([}\\]])/g, '$1')); } catch (e) {}\n  return null;\n};\n\nconst cleanVerdict = v => {\n  const s = String(v).toLowerCase().trim();\n  return ['true', 'false', 'unsure'].includes(s) ? s : 'unsure';\n};\n\n// the quote must appear in the facts the judge was given (Apollo data or search evidence)\nconst quoteOk = (quote, facts) => {\n  const f = norm(facts);\n  const parts = String(quote || '').split(/\\.\\.\\.|…|\\s-\\s/).map(norm).filter(p => p.length >= 8);\n  return parts.length > 0 && parts.every(p => f.includes(p));\n};\n\nreturn inputs.map((c, i) => {\n  const parsed = parseJudge(answers[i].output || answers[i].text);\n  // the judge rates all three forces, not only the ones the search found the company under\n  const forces = FORCES;\n\n  const verdicts = {};\n  const reasons = [];\n  let buyer = 'unclear';\n  let business_type = 'other';\n  let judge_quote = '';\n  let segment_match = 'unclear';\n  let segment_note = '';\n  let job_focus = 'unknown';\n\n  // output check: an empty or cut-off answer is NEVER turned into verdicts. The row stays \"candidate\"\n  // and is marked, so it is visible and can be judged again (Stage 2.2 leaves it out of the scoring).\n  if (!parsed || !Array.isArray(parsed.judgements) || !parsed.business_type) {\n    const raw = String(answers[i].output || answers[i].text || '');\n    const failed = Object.assign({}, c, {\n      status: 'candidate',\n      judge_reasons: 'JUDGE FAILED: answer ' + (raw ? 'cut off after ' + raw.length + ' characters' : 'empty') + '. Judge this company again.'\n    });\n    delete failed.judge_text;\n    delete failed.profile_text;\n    return { json: failed };\n  }\n  {\n    const b = String(parsed.buyer_match || '').toLowerCase();\n    buyer = ['yes', 'no', 'unclear'].includes(b) ? b : 'unclear';\n    const t = String(parsed.business_type || '').toLowerCase();\n    business_type = TYPES.includes(t) ? t : 'other';\n    if (parsed.main_product) reasons.push('main product: ' + parsed.main_product);\n    // segment: \"same\" or \"different\" only count with a quote found in the data (fail safe: otherwise unclear)\n    const jf = String(parsed.job_focus || '').toLowerCase();\n    job_focus = ['core', 'major_module', 'minor_feature'].includes(jf) ? jf : 'unknown';\n\n    const seg = String(parsed.segment_match || '').toLowerCase();\n    const basis = String(parsed.segment_basis || '').toLowerCase();\n    const segQuoteOk = quoteOk(parsed.segment_quote, c.judge_text);\n    // the analysed company's customer size counts only if its profile states it\n    const ownSizeKnown = /^buyer_company_size:/m.test(String(c.profile_text || ''));\n    let segNote = '';\n    if (seg === 'same' || seg === 'different') {\n      if (!segQuoteOk) segNote = '[' + seg + ' not used: quote not found in the data]';\n      else if (seg === 'different' && basis !== 'buyer_type' && !ownSizeKnown) segNote = '[different not used: based on size, but the analysed company does not state its customer size]';\n      else segment_match = seg;\n    }\n    segment_note = [parsed.segment_reason || '', parsed.segment_quote ? '\"' + parsed.segment_quote + '\"' : '', segNote]\n      .filter(Boolean).join(' ');\n    const smj = String(parsed.same_main_job || '').toLowerCase();\n    var same_main_job = ['yes', 'partly', 'no'].includes(smj) ? smj : 'partly';\n\n    var rivalryMovedToSubstitute = null;\n    const byForce = {};\n    for (const j of parsed.judgements || []) byForce[String(j.force).toLowerCase()] = j;\n\n    for (const f of forces) {\n      const j = byForce[f];\n      if (!j) { verdicts[f] = 'unsure'; reasons.push(f + ': unsure - no judgement returned'); continue; }\n      let v = cleanVerdict(j.verdict);\n      let note = '';\n      if (v === 'true') {\n        if (quoteOk(j.based_on, c.judge_text)) { if (!judge_quote) judge_quote = String(j.based_on); }\n        else { v = 'unsure'; note = ' [quote not found in the data]'; }\n      }\n      // rule in code: a direct rival must have the SAME main product, not just one module or use case\n      if (f === 'rivalry' && v === 'true' && same_main_job !== 'yes') {\n        // the job is real, but only as one module or use case of a broader product = a different kind of solution = substitute\n        v = 'false';\n        note += ' [not a direct rival: main product match is ' + same_main_job + ', counted as substitute]';\n        if (same_main_job === 'partly') rivalryMovedToSubstitute = j.based_on || '';\n      }\n      verdicts[f] = v;\n      reasons.push(f + ': ' + v + ' - ' + (j.reason || '') + note);\n    }\n  }\n\n  // a rival that was downgraded (module of a broader product) becomes a substitute with the same quote\n  if (typeof rivalryMovedToSubstitute === 'string' && verdicts.substitute !== 'true') {\n    verdicts.substitute = 'true';\n    reasons.push('substitute: true - moved from rivalry (module or use case of a broader product)');\n    if (!judge_quote && rivalryMovedToSubstitute) judge_quote = rivalryMovedToSubstitute;\n  }\n  // rivalry and substitute exclude each other: same main product = rivalry, otherwise substitute\n  if (verdicts.rivalry === 'true' && verdicts.substitute === 'true') {\n    verdicts.substitute = 'false';\n    reasons.push('substitute: set to false - same main product, counted as rivalry');\n  }\n  const vals = Object.values(verdicts);\n  let verdict;\n  if (buyer === 'no') verdict = 'false';\n  else if (vals.includes('true')) verdict = (buyer === 'yes' || !STRICT) ? 'true' : 'unsure';\n  else if (vals.includes('unsure')) verdict = 'unsure';\n  else verdict = 'false';\n  const status = { true: 'verified', unsure: 'unsure', false: 'rejected' }[verdict];\n\n  const out = { ...c };\n  // forces the company really belongs to after judging (true or unsure)\n  const judged = FORCES.filter(f => verdicts[f] === 'true' || verdicts[f] === 'unsure');\n  if (judged.length) { out.forces_text = judged.join(', '); out.force_count = judged.length; }\n  delete out.judge_text;\n  delete out.profile_text;\n  Object.assign(out, {\n    buyer_match: buyer,\n    business_type,\n    verdict,\n    verdict_rivalry: verdicts.rivalry || null,\n    verdict_substitute: verdicts.substitute || null,\n    verdict_new_entrant: verdicts.new_entrant || null,\n    judge_reasons: reasons.join('\\n'),\n    judge_quote: judge_quote || null,\n    segment_match,\n    segment_note: segment_note || null,\n    job_focus,\n    status\n  });\n  // drop empty values so Airtable does not fail on empty single-selects\n  for (const k of Object.keys(out)) if (out[k] === null || out[k] === undefined || out[k] === '') delete out[k];\n  return { json: out };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5056,
+        2896
+      ],
+      "id": "70613923-7807-4935-89d3-d2451af3f99d",
+      "name": "Parse verdict"
+    },
+    {
+      "parameters": {
+        "content": "## Test the judge (no searches, no Apollo)\n1. Remove the line Code in JavaScript2 → Judge input\n2. Connect TEST load run → Judge input\n3. Click Execute step on: TEST load profile, TEST load run, Judge input, AI Agent2, Parse verdict, Update record (one after another)\n4. Put the lines back as they were",
+        "height": 260,
+        "width": 460
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        4032,
+        3360
+      ],
+      "id": "a40f953d-3f70-458b-a69d-f54d51917b6c",
+      "name": "Sticky Note test"
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "profile_runs",
+        "limit": 1,
+        "matchType": "allFilters",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "run_id",
+              "condition": "eq",
+              "keyValue": "={{ $json.run_id }}"
+            }
+          ]
+        }
+      },
+      "id": "46f59d44-796f-4971-9924-c39a19d26db2",
+      "name": "load profile1",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        272,
+        2720
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE",
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "id",
+              "type": "string",
+              "value": "={{ $json.id }}"
+            },
+            {
+              "id": "a2",
+              "name": "fields",
+              "type": "object",
+              "value": "={{ $json }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c1eb8ae9-9c39-43ef-b260-f75cc95bb210",
+      "name": "Create a record1",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        3984,
+        2896
+      ],
+      "notes": "Keeps the old Airtable shape {id, fields} for the nodes after it"
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "profile_runs",
+        "limit": 1,
+        "matchType": "allFilters",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "run_id",
+              "condition": "eq",
+              "keyValue": "run_REPLACE_WITH_A_RUN_ID"
+            }
+          ]
+        }
+      },
+      "id": "9ed7f90f-b4aa-4440-8e4c-a79b83949eea",
+      "name": "TEST load profile",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        4096,
+        3168
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE",
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "competitors",
+        "returnAll": true,
+        "matchType": "allFilters",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "run_id",
+              "condition": "eq",
+              "keyValue": "run_REPLACE_WITH_A_RUN_ID"
+            }
+          ]
+        }
+      },
+      "id": "5cf18131-48af-4fbb-a254-aca7191ecaad",
+      "name": "TEST load run",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        4320,
+        3168
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE",
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Competitor row: exactly the columns of the Supabase table, the SAME keys in every row\n// (the Supabase node inserts all rows in one request; Supabase rejects rows with different keys)\nconst COLS = ['name', 'domain', 'run_id', 'analysed_domain', 'forces_text', 'force_count', 'display_group', 'hits',\n  'what_they_do', 'evidence_text', 'recent_moves_text', 'any_direct', 'from_own_site', 'needs_domain'];\nconst flat = v => Array.isArray(v) ? v.join(', ') : (v && typeof v === 'object') ? JSON.stringify(v) : v;\nreturn $input.all().map(i => {\n  const o = { approved: false, status: 'candidate' };\n  for (const k of COLS) {\n    const v = i.json[k];\n    o[k] = (v === undefined || v === null || v === '') ? null : flat(v);\n  }\n  return { json: o };\n});"
+      },
+      "id": "d44c6a7d-e044-4700-96e3-b0949b378044",
+      "name": "Competitor row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3600,
+        2896
+      ]
+    },
+    {
+      "parameters": {
+        "tableId": "competitors",
+        "dataToSend": "autoMapInputData"
+      },
+      "id": "ca15d771-9e02-4d3c-a37e-cc2606ceb29e",
+      "name": "Insert competitor",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        3760,
+        2896
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE",
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Update row: id + only the table columns that have a value (Apollo misses stay untouched)\nconst COLS = ['needs_domain', 'apollo_id', 'apollo_name', 'apollo_description', 'website_url', 'logo_url', 'hq_city',\n  'keywords_text', 'industry', 'headcount_growth_6m', 'headcount_growth_12m', 'headcount_growth_24m', 'sales_headcount',\n  'engineering_headcount', 'funding_total_usd', 'last_funding_stage', 'funding_rounds_text', 'revenue', 'parent_company',\n  'public_ticker', 'hq_country', 'founded_year', 'funding_total', 'linkedin_url', 'crunchbase_url', 'enrich_note',\n  'employees', 'domain', 'verdict', 'verdict_rivalry', 'verdict_substitute', 'verdict_new_entrant', 'buyer_match',\n  'judge_reasons', 'status', 'business_type', 'judge_quote', 'forces_text', 'force_count', 'segment_match',\n  'segment_note', 'job_focus'];\nconst flat = v => Array.isArray(v) ? v.join(', ') : (v && typeof v === 'object') ? JSON.stringify(v) : v;\nreturn $input.all().map(i => {\n  const j = i.json;\n  const o = { id: j.id, enriched: !!j.apollo_id };\n  for (const k of COLS) {\n    const v = j[k];\n    if (v !== undefined && v !== null && v !== '') o[k] = flat(v);\n  }\n  if (j.last_funding_date) o.last_funding_date = new Date(j.last_funding_date).toISOString();\n  return { json: o };\n});"
+      },
+      "id": "2e502f31-fc07-4579-84f8-a00145e417cc",
+      "name": "Update row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5296,
+        2880
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "tableId": "competitors",
+        "matchType": "allFilters",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ $json.id }}"
+            }
+          ]
+        },
+        "dataToSend": "autoMapInputData",
+        "inputsToIgnore": "id"
+      },
+      "id": "8042ef9d-a760-4f31-b33a-3cbdb1c10e59",
+      "name": "Update record",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        5456,
+        2880
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE",
+          "name": "Supabase"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "AI Agent1": {
+      "main": [
+        [
+          {
+            "node": "F1 validate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Build dataset",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare profile": {
+      "main": [
+        [
+          {
+            "node": "AI Agent1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "F2 plan",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "F3 plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anthropic Chat Model1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent1",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "F1 perplexity": {
+      "main": [
+        [
+          {
+            "node": "F1 collect results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Out": {
+      "main": [
+        [
+          {
+            "node": "F1 perplexity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "F1 collect results": {
+      "main": [
+        [
+          {
+            "node": "F1 extract",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "F1 validate": {
+      "main": [
+        [
+          {
+            "node": "Split Out",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anthropic Chat Model2": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "F1 extract",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "F1 check": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "F1 extract": {
+      "main": [
+        [
+          {
+            "node": "F1 check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "F2 plan": {
+      "main": [
+        [
+          {
+            "node": "F2 validate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "F2 chat model (plan)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "F2 plan",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "F2 perplexity": {
+      "main": [
+        [
+          {
+            "node": "F2 collect results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "F2 split out": {
+      "main": [
+        [
+          {
+            "node": "F2 perplexity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "F2 collect results": {
+      "main": [
+        [
+          {
+            "node": "F2 extract",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "F2 validate": {
+      "main": [
+        [
+          {
+            "node": "F2 split out",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "F2 chat model (extract)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "F2 extract",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "F2 check": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "F2 extract": {
+      "main": [
+        [
+          {
+            "node": "F2 check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "F3 plan": {
+      "main": [
+        [
+          {
+            "node": "F3 validate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "F3 chat model (plan)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "F3 plan",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "F3 perplexity": {
+      "main": [
+        [
+          {
+            "node": "F3 collect results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "F3 split out": {
+      "main": [
+        [
+          {
+            "node": "F3 perplexity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "F3 collect results": {
+      "main": [
+        [
+          {
+            "node": "F3 extract",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "F3 validate": {
+      "main": [
+        [
+          {
+            "node": "F3 split out",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "F3 chat model (extract)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "F3 extract",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "F3 check": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "F3 extract": {
+      "main": [
+        [
+          {
+            "node": "F3 check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent2": {
+      "main": [
+        [
+          {
+            "node": "Parse verdict",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anthropic Chat Model3": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent2",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apollo enrich": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript2",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code in JavaScript2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript2": {
+      "main": [
+        [
+          {
+            "node": "Judge input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Judge input": {
+      "main": [
+        [
+          {
+            "node": "AI Agent2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "load profile1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "load profile1": {
+      "main": [
+        [
+          {
+            "node": "Prepare profile",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create a record1": {
+      "main": [
+        [
+          {
+            "node": "Apollo enrich",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TEST load profile": {
+      "main": [
+        [
+          {
+            "node": "TEST load run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build dataset": {
+      "main": [
+        [
+          {
+            "node": "Competitor row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Competitor row": {
+      "main": [
+        [
+          {
+            "node": "Insert competitor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert competitor": {
+      "main": [
+        [
+          {
+            "node": "Create a record1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse verdict": {
+      "main": [
+        [
+          {
+            "node": "Update row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update row": {
+      "main": [
+        [
+          {
+            "node": "Update record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update record": {
+      "main": [
+        [
+          {
+            "node": "Call 'stage 2.2'",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

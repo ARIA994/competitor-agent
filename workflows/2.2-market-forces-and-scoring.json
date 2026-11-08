@@ -1,0 +1,1007 @@
+{
+  "name": "2.2 · Market forces + scoring",
+  "nodes": [
+    {
+      "parameters": {
+        "resource": "row",
+        "operation": "getAll",
+        "tableId": "profile_runs",
+        "limit": 1,
+        "filterType": "manual",
+        "matchType": "allFilters",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "run_id",
+              "condition": "eq",
+              "keyValue": "={{ $json.run_id }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -3008,
+        -656
+      ],
+      "id": "c0a91f54-2bc4-4cac-94e3-b23db921624e",
+      "name": "load profile",
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE",
+          "name": "Supabase"
+        }
+      },
+      "executeOnce": true
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        -328,
+        -688
+      ],
+      "id": "af0b535c-cbd6-45ac-a339-9f2d2ca5c101",
+      "name": "Merge1"
+    },
+    {
+      "parameters": {
+        "jsCode": "// F4 parse (for F5: change the 3 config lines)\nconst FORCE = 'buyer_power';\nconst DRIVERS = ['alternatives', 'switching_cost', 'price_sensitivity', 'in_house_option', 'buyer_concentration'];\nconst RESEARCH_NODE = 'F4 research';\n\nconst research = $(RESEARCH_NODE).first().json;\nconst citations = research.citations || (research.search_results || []).map(r => r.url) || [];\nconst raw = String($input.first().json.output || $input.first().json.text || '').replace(/```json|```/g, '').trim();\nconst txt = raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1);\nlet p;\ntry { p = JSON.parse(txt); }\ncatch (e) {\n  try { p = JSON.parse(txt.replace(/,\\s*([}\\]])/g, '$1')); }\n  catch (e2) { throw new Error(`${FORCE}: AI did not return valid JSON: ` + raw.slice(0, 200)); }\n}\n\nconst LEVEL = { high: 2, medium: 1, low: 0 };\nconst byName = {};\nfor (const d of p.drivers || []) byName[String(d.driver || '').toLowerCase()] = d;\n\nconst drivers = DRIVERS.map(name => {\n  const d = byName[name] || {};\n  let rating = String(d.rating || 'unknown').toLowerCase();\n  if (!(rating in LEVEL)) rating = 'unknown';\n  let source = String(d.source || '').trim();\n  const m = source.match(/^\\[?(\\d+)\\]?$/);\n  if (m && citations[Number(m[1]) - 1]) source = citations[Number(m[1]) - 1];\n  const sourceOk = source === 'our data' || citations.includes(source);\n  let reason = String(d.reason || '');\n  if (rating !== 'unknown' && !sourceOk) { reason = `${reason} [source not in research, set to unknown]`; rating = 'unknown'; }\n  return { driver: name, rating, reason, source: sourceOk ? source : '' };\n});\n\n// Overall rating is computed in code, not by the AI\nconst known = drivers.filter(d => d.rating !== 'unknown');\nconst avg = known.length ? known.reduce((s, d) => s + LEVEL[d.rating], 0) / known.length : null;\nconst overall = known.length < 2 ? 'unknown' : avg >= 1.4 ? 'high' : avg >= 0.7 ? 'medium' : 'low';\n\nreturn [{ json: {\n  run_id: $('Stats').first().json.run_id,\n  force: FORCE,\n  overall,\n  known_drivers: known.length,\n  drivers,\n  summary: String(p.summary || ''),\n  drivers_text: drivers.map(d => `${d.driver}: ${d.rating} – ${d.reason}${d.source ? ' (' + d.source + ')' : ''}`).join('\\n'),\n  citations,\n} }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -808,
+        -704
+      ],
+      "name": "F4 parse",
+      "id": "ba7d8ceb-2276-49e3-ba79-16d02453774d"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "claude-sonnet-5-5",
+          "cachedResultName": "Claude Sonnet 5.5"
+        },
+        "options": {
+          "maxTokensToSample": 2000,
+          "temperature": 0
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        -1080,
+        -496
+      ],
+      "name": "F4 model",
+      "id": "a7bac50c-535f-4cbe-b3e6-b1e4a8a02b5d",
+      "credentials": {
+        "anthropicApi": {
+          "id": "REPLACE",
+          "name": "Anthropic"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=ANALYSED COMPANY\n{{ $('Stats').first().json.profile_text }}\n\nOUR DATA (counted from the verified competitor list)\n{{ $('Stats').first().json.stats_text }}\n\nRESEARCH (numbers in [ ] refer to the sources list)\n{{ $json.choices[0].message.content }}\n\nSOURCES\n{{ ($json.citations || ($json.search_results || []).map(r => r.url)).map((u, i) => '[' + (i + 1) + '] ' + u).join('\\n') }}",
+        "options": {
+          "systemMessage": "You rate BUYER POWER (Porter's Five Forces) for the analysed company, using ONLY the research and our data below.\n\nRate each driver by how much it INCREASES the power of buyers:\n- alternatives: many alternatives = high\n- switching_cost: LOW switching cost = high buyer power\n- price_sensitivity: buyers push on price = high\n- in_house_option: buyers can easily do it themselves = high\n- buyer_concentration: few large customers with negotiating power = high\n\nRules:\n- rating is \"high\", \"medium\", \"low\" or \"unknown\".\n- Use \"unknown\" when the research has no fact for the driver. Never guess.\n- source is the citation number (e.g. \"[3]\") or \"our data\". Nothing else.\n- For alternatives, use the counts in OUR DATA first.\n- reason: max 25 words, state the fact.\n\nReturn ONLY this JSON:\n{\"drivers\":[{\"driver\":\"alternatives\",\"rating\":\"\",\"reason\":\"\",\"source\":\"\"},{\"driver\":\"switching_cost\",\"rating\":\"\",\"reason\":\"\",\"source\":\"\"},{\"driver\":\"price_sensitivity\",\"rating\":\"\",\"reason\":\"\",\"source\":\"\"},{\"driver\":\"in_house_option\",\"rating\":\"\",\"reason\":\"\",\"source\":\"\"},{\"driver\":\"buyer_concentration\",\"rating\":\"\",\"reason\":\"\",\"source\":\"\"}],\"summary\":\"max 40 words\"}"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        -1080,
+        -704
+      ],
+      "name": "F4 AI",
+      "id": "be74fb75-2f86-42f8-8fa2-eec557a46410"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.perplexity.ai/chat/completions",
+        "sendHeaders": false,
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'sonar-pro', temperature: 0, messages: [ { role: 'system', content: \"You are a market analyst. Answer only with facts from current web sources and cite every fact with [n]. If you find nothing for a question, write \\\"no data found\\\". No general Porter theory, no guesses.\" }, { role: 'user', content: `Analysed company: ${$json.company_name} (${$json.domain})\nCategory: ${$json.category}\nProfile:\n${$json.profile_text}\n\nResearch the BUYER POWER of this company's customers. Answer each question separately:\n1. Alternatives: which tools and services can these buyers choose instead? Name examples.\n2. Switching cost: how hard is it for a customer to switch tools in this category (integrations with TMS/ERP, data onboarding, contract length)?\n3. Price sensitivity: typical pricing models and price levels in this category. Do buyers push on price?\n4. In-house option: do buyers build this themselves with ERP/TMS modules, BI tools or spreadsheets?\n5. Buyer concentration: are customers mainly large enterprises with negotiating power, or many mid-sized companies?` } ] }) }}",
+        "options": {
+          "timeout": 120000
+        },
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "perplexityApi"
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1304,
+        -704
+      ],
+      "name": "F4 research",
+      "id": "ed198cad-f348-4809-88c6-e9ec339e5e6b",
+      "credentials": {
+        "perplexityApi": {
+          "id": "REPLACE",
+          "name": "Perplexity"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Stats: builds the analysed company's profile text and counts facts from our own competitor data\nconst profRec = $('load profile').first().json;\nconst pf = profRec.fields || profRec;\nlet raw = {};\ntry { raw = JSON.parse(pf.profile_json || '{}'); } catch (e) { throw new Error('profile_json is not valid JSON'); }\n\nconst val = k => {\n  const o = raw[k]; if (!o) return null;\n  let v = o.value;\n  if (v === null || v === undefined || v === '' || (Array.isArray(v) && !v.length)) return null;\n  if (Array.isArray(v)) v = v.map(i => (i && typeof i === 'object') ? i.item : i).filter(Boolean);\n  return v;\n};\nconst show = v => Array.isArray(v) ? v.join('; ') : String(v);\nconst profile = {};\nfor (const k of Object.keys(raw)) profile[k] = val(k);\nconst profile_text = Object.entries(profile).filter(([, v]) => v !== null).map(([k, v]) => k + ': ' + show(v)).join('\\n');\n\n// Competitors from Airtable (works with flat or nested \"fields\" output)\nconst comps = $input.all().map(i => ({ id: i.json.id, ...(i.json.fields || i.json) }));\nconst isTrue = v => String(v && v.name ? v.name : v) === 'true';\n// business type set by the judge after enrichment (software / service / logistics_provider / consultancy / other)\nconst btype = c => String(c.business_type && c.business_type.name ? c.business_type.name : (c.business_type || '')).toLowerCase();\nconst status = c => String(c.status && c.status.name ? c.status.name : c.status);\n\nconst count = (list, fn) => list.filter(fn).length;\nconst monthsAgo = d => d ? (Date.now() - new Date(d).getTime()) / (30.44 * 864e5) : Infinity;\nconst emp = comps.map(c => Number(c.employees)).filter(n => n > 0).sort((a, b) => a - b);\nconst median = emp.length ? emp[Math.floor(emp.length / 2)] : null;\n\nconst stats = {\n  candidates_not_rejected: comps.length,\n  verified: count(comps, c => status(c) === 'verified'),\n  unsure: count(comps, c => status(c) === 'unsure'),\n  rivals_true: count(comps, c => isTrue(c.verdict_rivalry)),\n  substitutes_true: count(comps, c => isTrue(c.verdict_substitute)),\n  new_entrants_true: count(comps, c => isTrue(c.verdict_new_entrant)),\n  outsourced_services: count(comps, c => btype(c) === 'service' && isTrue(c.verdict_substitute)),\n  large_players_1000plus: count(comps, c => Number(c.employees) >= 1000),\n  funded_last_24_months: count(comps, c => monthsAgo(c.last_funding_date) <= 24),\n  growing_20pct_12m: count(comps, c => Number(c.headcount_growth_12m) >= 0.2),\n  median_employees: median,\n};\n\n// Platform owners: TMS/ERP/visibility platforms (or 1000+ employee software players) that hold supplier power in this market\n// Platform owners: software platforms bought for something else (TMS / ERP / visibility) that also do this job as a module.\n// Checked on what the company does (search summary + Apollo description + keywords), never on the judge's reasons.\nconst PLATFORM_RE = /\\b(tms|erp|s\\/4hana|dynamics 365|transportation management|transport management|visibility platform|supply chain execution)\\b/i;\nconst anyForce = c => ['verdict_rivalry', 'verdict_substitute', 'verdict_new_entrant'].some(k => ['true', 'unsure'].includes(String(c[k] && c[k].name ? c[k].name : c[k])));\nconst focus = c => String(c.job_focus && c.job_focus.name ? c.job_focus.name : (c.job_focus || '')).toLowerCase();\nconst platform_owners = comps\n  .filter(c => anyForce(c) && btype(c) === 'software' && focus(c) !== 'core'\n    && (!Number(c.employees) || Number(c.employees) >= 100)\n    && PLATFORM_RE.test((c.what_they_do || '') + ' ' + (c.apollo_description || '') + ' ' + (c.keywords_text || '')))\n  .map(c => ({ id: c.id, name: c.name, employees: Number(c.employees) || null }));\nconst integrations = Array.isArray(profile.integrations_tech) ? profile.integrations_tech : (profile.integrations_tech ? [profile.integrations_tech] : []);\n\nconst stats_text = [\n  'Competitors found (not rejected): ' + (stats.candidates_not_rejected) + ' (verified ' + (stats.verified) + ', unsure ' + (stats.unsure) + ')',\n  'Direct rivals (judge true): ' + (stats.rivals_true),\n  'Substitutes (judge true): ' + (stats.substitutes_true) + ', of which outsourced services: ' + (stats.outsourced_services),\n  'New entrants (judge true): ' + (stats.new_entrants_true),\n  'Large players with 1000+ employees: ' + (stats.large_players_1000plus),\n  'Raised funding in the last 24 months: ' + (stats.funded_last_24_months),\n  'Grew headcount 20%+ in 12 months: ' + (stats.growing_20pct_12m),\n  'Median competitor size: ' + (median === null ? 'unknown' : median) + ' employees',\n  'Integrations stated on its own website: ' + (integrations.join(', ') || 'none'),\n  'Platform owners among competitors (TMS/ERP/visibility platforms with their own audit or spend module): ' + (platform_owners.length) + ' – ' + (platform_owners.map(p => p.name).join(', ') || 'none'),\n].join('\\n');\n\nreturn [{ json: {\n  run_id: pf.run_id,\n  company_name: profile.company_name || pf.company_name || pf.domain,\n  domain: pf.domain,\n  category: profile.category || pf.category || '',\n  profile_text, integrations, stats, stats_text, platform_owners,\n} }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2384,
+        -336
+      ],
+      "name": "Stats",
+      "id": "b8782316-cf66-43e9-8c2d-27b37e939f60"
+    },
+    {
+      "parameters": {
+        "resource": "row",
+        "operation": "getAll",
+        "tableId": "competitors",
+        "returnAll": true,
+        "filterType": "manual",
+        "matchType": "allFilters",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "run_id",
+              "condition": "eq",
+              "keyValue": "={{ $('When Executed by Another Workflow').first().json.run_id }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -2736,
+        -656
+      ],
+      "name": "Get competitors",
+      "executeOnce": true,
+      "id": "503c5261-22d7-4e8f-a87a-5a85b2a88f4a",
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE",
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "# F4",
+        "height": 240,
+        "width": 800,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -1416,
+        -752
+      ],
+      "typeVersion": 1,
+      "id": "2840ec61-6d78-4d87-9c80-9ca6195275bc",
+      "name": "Sticky Note5"
+    },
+    {
+      "parameters": {
+        "content": "# F5",
+        "height": 240,
+        "width": 800,
+        "color": 6
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -1416,
+        -384
+      ],
+      "typeVersion": 1,
+      "id": "79d4005f-d3ed-4885-9877-d8776a550357",
+      "name": "Sticky Note3"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.perplexity.ai/chat/completions",
+        "sendHeaders": false,
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'sonar-pro', temperature: 0, messages: [ { role: 'system', content: \"You are a market analyst. Answer only with facts from current web sources and cite every fact with [n]. If you find nothing for a question, write \\\"no data found\\\". No general Porter theory, no guesses.\" }, { role: 'user', content: `Analysed company: ${$json.company_name} (${$json.domain})\nCategory: ${$json.category}\nProfile:\n${$json.profile_text}\n\nPlatform owners we found among its competitors: ${($json.platform_owners || []).map(p => p.name).join(', ') || 'none'}\n\nResearch the SUPPLIER POWER in this market: how much power do the suppliers of data, access and technology have over companies like this one? Answer at market level, each question separately:\n1. Data access: where do products in this category get their core data (carrier invoices, rates, shipment data, EDI)? Do carriers or data networks control the format or access, or charge for it?\n2. Integration gatekeepers: do TMS/ERP and visibility platforms control API access to shipment and freight cost data, charge partner fees, or bundle their own freight audit or spend module?\n3. Supplier concentration: are there only a few providers of key inputs (freight data networks, EDI providers, carrier APIs)?\n4. Forward integration: are carriers, TMS/ERP vendors or data platforms launching their own freight audit or spend management products? Name examples with dates.` } ] }) }}",
+        "options": {
+          "timeout": 120000
+        },
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "perplexityApi"
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1288,
+        -336
+      ],
+      "name": "F5 research1",
+      "id": "b127b2b9-f9a1-4aa4-97b9-c3ef80e22bb7",
+      "credentials": {
+        "perplexityApi": {
+          "id": "REPLACE",
+          "name": "Perplexity"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=ANALYSED COMPANY\n{{ $('Stats').first().json.profile_text }}\n\nOUR DATA (counted from the verified competitor list)\n{{ $('Stats').first().json.stats_text }}\n\nRESEARCH (numbers in [ ] refer to the sources list)\n{{ $json.choices[0].message.content }}\n\nSOURCES\n{{ ($json.citations || ($json.search_results || []).map(r => r.url)).map((u, i) => '[' + (i + 1) + '] ' + u).join('\\n') }}",
+        "options": {
+          "systemMessage": "You rate SUPPLIER POWER (Porter's Five Forces) at MARKET level for companies like the analysed company, using ONLY the research and our data below.\n\nRate each driver by how much it INCREASES the power of suppliers:\n- data_access: core data (carrier invoices, rates, shipment data) is controlled, formatted or charged for by a few parties = high\n- integration_gatekeepers: TMS/ERP/visibility platforms control access to the data or bundle their own audit/spend module = high\n- supplier_concentration: few providers of key inputs = high\n- forward_integration: suppliers (carriers, TMS/ERP vendors, data platforms) launch the same product themselves = high\n\nRules:\n- rating is \"high\", \"medium\", \"low\" or \"unknown\".\n- Use \"unknown\" when the research has no fact for the driver. Never guess.\n- source is the citation number (e.g. \"[3]\") or \"our data\". Nothing else.\n- You may use \"our data\" (platform owners among competitors) for integration_gatekeepers and forward_integration.\n- reason: max 25 words, state the fact.\n- Do not claim that any specific company is a supplier of the analysed company.\n\nReturn ONLY this JSON:\n{\"drivers\":[{\"driver\":\"data_access\",\"rating\":\"\",\"reason\":\"\",\"source\":\"\"},{\"driver\":\"integration_gatekeepers\",\"rating\":\"\",\"reason\":\"\",\"source\":\"\"},{\"driver\":\"supplier_concentration\",\"rating\":\"\",\"reason\":\"\",\"source\":\"\"},{\"driver\":\"forward_integration\",\"rating\":\"\",\"reason\":\"\",\"source\":\"\"}],\"summary\":\"max 40 words\"}"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        -1064,
+        -336
+      ],
+      "name": "F5 AI1",
+      "id": "8be1629d-9c0e-43ad-a626-96d45504da06"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "claude-sonnet-5-5",
+          "cachedResultName": "Claude Sonnet 5.5"
+        },
+        "options": {
+          "maxTokensToSample": 2000,
+          "temperature": 0
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        -1064,
+        -144
+      ],
+      "name": "F5 model1",
+      "id": "1befc315-a537-45db-9cba-8efd16bae582",
+      "credentials": {
+        "anthropicApi": {
+          "id": "REPLACE",
+          "name": "Anthropic"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// F5 parse: supplier power, rated at market level\nconst FORCE = 'supplier_power';\nconst DRIVERS = ['data_access', 'integration_gatekeepers', 'supplier_concentration', 'forward_integration'];\nconst RESEARCH_NODE = 'F5 research1';\nconst STATS_NODE = 'Stats';\n\nconst research = $(RESEARCH_NODE).first().json;\nconst citations = research.citations || (research.search_results || []).map(r => r.url) || [];\nconst raw = String($input.first().json.output || $input.first().json.text || '').replace(/```json|```/g, '').trim();\nconst txt = raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1);\nlet p;\ntry { p = JSON.parse(txt); }\ncatch (e) {\n  try { p = JSON.parse(txt.replace(/,\\s*([}\\]])/g, '$1')); }\n  catch (e2) { throw new Error(`${FORCE}: AI did not return valid JSON: ` + raw.slice(0, 200)); }\n}\n\nconst LEVEL = { high: 2, medium: 1, low: 0 };\nconst byName = {};\nfor (const d of p.drivers || []) byName[String(d.driver || '').toLowerCase()] = d;\n\nconst drivers = DRIVERS.map(name => {\n  const d = byName[name] || {};\n  let rating = String(d.rating || 'unknown').toLowerCase();\n  if (!(rating in LEVEL)) rating = 'unknown';\n  let source = String(d.source || '').trim();\n  const m = source.match(/^\\[?(\\d+)\\]?$/);\n  if (m && citations[Number(m[1]) - 1]) source = citations[Number(m[1]) - 1];\n  const sourceOk = source === 'our data' || citations.includes(source);\n  let reason = String(d.reason || '');\n  if (rating !== 'unknown' && !sourceOk) { reason = `${reason} [source not in research, set to unknown]`; rating = 'unknown'; }\n  return { driver: name, rating, reason, source: sourceOk ? source : '' };\n});\n\n// Overall rating is computed in code, not by the AI\nconst known = drivers.filter(d => d.rating !== 'unknown');\nconst avg = known.length ? known.reduce((s, d) => s + LEVEL[d.rating], 0) / known.length : null;\nconst overall = known.length < 2 ? 'unknown' : avg >= 1.4 ? 'high' : avg >= 0.7 ? 'medium' : 'low';\n\nreturn [{ json: {\n  run_id: $(STATS_NODE).first().json.run_id,\n  force: FORCE,\n  overall,\n  known_drivers: known.length,\n  drivers,\n  summary: String(p.summary || ''),\n  drivers_text: drivers.map(d => `${d.driver}: ${d.rating} – ${d.reason}${d.source ? ' (' + d.source + ')' : ''}`).join('\\n'),\n  citations,\n  platform_owners: $(STATS_NODE).first().json.platform_owners,\n} }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -792,
+        -336
+      ],
+      "name": "F5 parse1",
+      "id": "ad5c0e48-4075-40e1-9559-844133b5b0aa"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 4
+          },
+          "conditions": [
+            {
+              "id": "d64ab49f-d1b7-4d4b-82f3-a091369721cf",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "rejected",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            },
+            {
+              "id": "0b04c099-38f9-401b-a249-7bde3329b5a6",
+              "leftValue": "={{ $json.run_id }}",
+              "rightValue": "={{ $('When Executed by Another Workflow').first().json.run_id }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.4,
+      "position": [
+        -2448,
+        -656
+      ],
+      "id": "57479a8f-c77a-4cae-8968-75e6846e1af3",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "resource": "row",
+        "operation": "create",
+        "tableId": "force_assessments",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "assessment",
+              "fieldValue": "={{ $json.run_id + ' · ' + $json.force }}"
+            },
+            {
+              "fieldId": "run_id",
+              "fieldValue": "={{ $json.run_id }}"
+            },
+            {
+              "fieldId": "force",
+              "fieldValue": "={{ $json.force }}"
+            },
+            {
+              "fieldId": "overall",
+              "fieldValue": "={{ $json.overall }}"
+            },
+            {
+              "fieldId": "known_drivers",
+              "fieldValue": "={{ $json.known_drivers }}"
+            },
+            {
+              "fieldId": "summary",
+              "fieldValue": "={{ $json.summary }}"
+            },
+            {
+              "fieldId": "drivers_text",
+              "fieldValue": "={{ $json.drivers_text }}"
+            },
+            {
+              "fieldId": "drivers_json",
+              "fieldValue": "={{ JSON.stringify($json.drivers) }}"
+            },
+            {
+              "fieldId": "citations_text",
+              "fieldValue": "={{ ($json.citations || []).join('\\n') }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -120,
+        -688
+      ],
+      "name": "Save forces",
+      "id": "145d61ab-8b9b-4d80-818c-35e9df228e1d",
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE",
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Score + rank: fixed rules, every number explainable\nconst STATS_NODE = 'Stats';\nconst FORCES_NODE = 'Forces';\n// read ALL rows from Get competitors and filter in code (no dependence on which If branch carries the run)\nconst COMPETITORS_NODE = 'Get competitors';\n\n// 1. Force weights from F4 (buyer power) and F5 (supplier power)\nconst forces = {};\nfor (const it of $(FORCES_NODE).all()) if (it.json.force) forces[it.json.force] = it.json;\nconst buyer = forces.buyer_power || { overall: 'unknown', drivers: [] };\nconst supplier = forces.supplier_power || { overall: 'unknown', drivers: [] };\nconst driver = (f, name) => ((f.drivers || []).find(d => d.driver === name) || {}).rating || 'unknown';\n\nconst W = { rivalry: 1.0, substitute: 0.8, new_entrant: 0.6 };\nconst rules = [];\nif (buyer.overall === 'high') { W.rivalry += 0.1; W.substitute += 0.2; rules.push('buyer power high: rivalry +0.1, substitute +0.2'); }\nif (buyer.overall === 'medium') { W.substitute += 0.1; rules.push('buyer power medium: substitute +0.1'); }\nif (driver(buyer, 'switching_cost') === 'high') { W.new_entrant += 0.2; rules.push('switching cost low (buyer power high): new_entrant +0.2'); }\n// capped at x1.1: one AI rating of supplier power must not move a company by 20%\nconst PLATFORM_MULT = supplier.overall === 'high' || supplier.overall === 'medium' ? 1.1 : 1.0;\nif (PLATFORM_MULT > 1) rules.push('supplier power ' + supplier.overall + ': platform owners x' + PLATFORM_MULT);\nconst MAX_R = 1.2;\n// job focus: how central the analysed company's job is to this competitor (from the judge)\nconst FOCUS = { core: 1.0, major_module: 0.8, minor_feature: 0.5, unknown: 0.8 };\n\n// 2. Helpers\nconst sel = v => String(v && v.name ? v.name : (v === null || v === undefined ? '' : v)).toLowerCase();\nconst clamp = x => Math.max(0, Math.min(1, x));\nconst monthsAgo = d => d ? (Date.now() - new Date(d).getTime()) / (30.44 * 864e5) : Infinity;\nconst platformIds = new Set(($(STATS_NODE).first().json.platform_owners || []).map(p => p.id));\nconst r2 = x => Math.round(x * 100) / 100;\n\n// 3. Score every competitor\nconst RUN_ID = $(STATS_NODE).first().json.run_id;\nif (!RUN_ID) throw new Error('No run_id from Stats');\nconst runRows = $(COMPETITORS_NODE).all()\n  .map(i => ({ id: i.json.id, ...(i.json.fields || i.json) }))\n  .filter(c => c.run_id === RUN_ID);\nif (!runRows.length) throw new Error('No competitors found for ' + RUN_ID);\nconst comps = runRows.filter(c => sel(c.status) !== 'rejected' && sel(c.status) !== 'candidate');\n// rows the judge could not rate (status still \"candidate\") are not scored, only listed\nconst judge_failed = runRows.filter(c => sel(c.status) === 'candidate').map(c => c.name);\n\n// 3. Market presence: is the competitor present in the analysed company's focus market?\n// local = HQ in the market · active = HQ elsewhere, but market domain or own website pages in the market language\n// none = clear data, no presence found · unknown = no HQ data (never penalised)\nconst PROFILE_NODE = 'load profile';\nconst SITE_NODE = 'Site signals';\nconst MARKETS = {\n  'DACH': { c: ['DE', 'AT', 'CH'], lang: 'de' }, 'Germany': { c: ['DE'], lang: 'de' }, 'Austria': { c: ['AT'], lang: 'de' },\n  'Switzerland': { c: ['CH'], lang: 'de' }, 'UK & Ireland': { c: ['GB', 'IE'], lang: '' }, 'France': { c: ['FR'], lang: 'fr' },\n  'Benelux': { c: ['NL', 'BE', 'LU'], lang: 'nl' }, 'Nordics': { c: ['SE', 'DK', 'NO', 'FI'], lang: 'sv' },\n  'Southern Europe': { c: ['ES', 'IT', 'PT'], lang: 'es' }, 'Central & Eastern Europe': { c: ['PL', 'CZ', 'RO', 'HU'], lang: 'pl' },\n  'EU': { c: ['DE', 'FR', 'NL', 'GB', 'ES', 'IT'], lang: '' }, 'North America': { c: ['US', 'CA'], lang: '' },\n  'United States': { c: ['US'], lang: '' }, 'Latin America': { c: ['BR', 'MX', 'AR', 'CO'], lang: 'es' },\n  'Middle East & Africa': { c: ['AE', 'SA', 'TR', 'ZA'], lang: '' }, 'India': { c: ['IN'], lang: '' },\n  'Asia-Pacific': { c: ['SG', 'AU', 'JP', 'IN'], lang: '' }, 'Global': { c: [], lang: '' }\n};\nconst COUNTRY = { DE: 'germany', AT: 'austria', CH: 'switzerland', GB: 'united kingdom', IE: 'ireland', FR: 'france',\n  NL: 'netherlands', BE: 'belgium', LU: 'luxembourg', SE: 'sweden', DK: 'denmark', NO: 'norway', FI: 'finland',\n  ES: 'spain', IT: 'italy', PT: 'portugal', PL: 'poland', CZ: 'czech', RO: 'romania', HU: 'hungary', US: 'united states',\n  CA: 'canada', BR: 'brazil', MX: 'mexico', AR: 'argentina', CO: 'colombia', AE: 'united arab emirates', SA: 'saudi arabia',\n  TR: 'turk', ZA: 'south africa', IN: 'india', SG: 'singapore', AU: 'australia', JP: 'japan' };\nconst LANG_WORDS = {\n  de: /\\b(und|der|die|das|für|mit|ihre|ihren|unsere|wir|sie|rechnung|rechnungen|frachtkosten|versand|kosten|prüfung)\\b/gi,\n  fr: /\\b(et|les|des|pour|avec|vos|nous|facture|factures|coûts)\\b/gi,\n  nl: /\\b(en|het|voor|met|uw|wij|factuur|facturen|kosten)\\b/gi,\n  es: /\\b(y|los|las|para|con|sus|nuestro|factura|facturas|costes|costos)\\b/gi,\n  sv: /\\b(och|för|med|våra|vi|faktura|fakturor|kostnader)\\b/gi,\n  pl: /\\b(dla|oraz|nasze|faktura|faktury|koszty)\\b/gi\n};\nlet focusMarket = '';\ntry { const pr = $(PROFILE_NODE).first().json; const pf = pr.fields || pr; focusMarket = String(pf.focus_market && pf.focus_market.name ? pf.focus_market.name : (pf.focus_market || '')); } catch (e) {}\nconst MK = MARKETS[focusMarket] || MARKETS['Global'];\nconst MARKET_ON = MK.c.length > 0;\nconst NO_PRESENCE_MULT = 0.8;\nconst tlds = MK.c.map(x => x === 'GB' ? '.uk' : '.' + x.toLowerCase());\nconst host = u => { const m = String(u || '').match(/^https?:\\/\\/(?:www\\.)?([^\\/\\s]+)/i); return m ? m[1].toLowerCase() : ''; };\n// results of the website check; empty when the check did not run\nlet SITE = {};\ntry { SITE = $(SITE_NODE).first().json.signals || {}; } catch (e) {}\nconst marketPresence = c => {\n  if (!MARKET_ON) return { label: 'n/a', note: 'no focus market' };\n  const country = String(c.hq_country || '').toLowerCase();\n  if (country && MK.c.some(x => country.includes(COUNTRY[x]))) return { label: 'local', note: 'HQ ' + [c.hq_city, c.hq_country].filter(Boolean).join(', ') };\n  const dom = String(c.domain || host(c.website_url) || '').toLowerCase();\n  if (dom && tlds.some(t => dom.endsWith(t))) return { label: 'active', note: 'market domain ' + dom };\n  // website check (Site signals): hreflang, market pages, market subdomain or market domain\n  const site = SITE[c.id];\n  if (site && site.found) return { label: 'active', note: site.note };\n  if (MK.lang && dom) {\n    const re = LANG_WORDS[MK.lang];\n    for (const l of String(c.evidence_text || '').split('\\n')) {\n      const m = l.match(/\"(.+)\"\\s*-\\s*(https?:\\S+)/);\n      if (!m) continue;\n      const h = host(m[2]);\n      const own = h === dom || h.endsWith('.' + dom);\n      const words = new Set((m[1].match(re) || []).map(w => w.toLowerCase()));\n      if (own && words.size >= 2) return { label: 'active', note: 'own website page in the market language (' + h + ')' };\n    }\n  }\n  if (!country) return { label: 'unknown', note: 'no HQ data' };\n  const checked = site && site.checked ? ', website checked' : '';\n  return { label: 'none', note: 'HQ ' + c.hq_country + ', no ' + focusMarket + ' signal found' + checked };\n};\n\nconst rows = comps.map(c => {\n  // Relevance: best force weight (true = full, unsure = half) + 0.1 per extra true force\n  const v = { rivalry: sel(c.verdict_rivalry), substitute: sel(c.verdict_substitute), new_entrant: sel(c.verdict_new_entrant) };\n  const parts = Object.entries(v).map(([f, x]) => x === 'true' ? W[f] : x === 'unsure' ? W[f] * 0.5 : 0);\n  const trueCount = Object.values(v).filter(x => x === 'true').length;\n  const focus = sel(c.job_focus) || 'unknown';\n  const F = FOCUS[focus] !== undefined ? FOCUS[focus] : FOCUS.unknown;\n  // relevance counts only as much as the job is central to them\n  const R = clamp((Math.max(...parts) + 0.1 * Math.max(0, trueCount - 1)) / MAX_R) * F;\n\n  // Size: employees (log) 60% + funding (log) 40%; funding unknown -> employees only; both unknown -> 0.25\n  const emp = Number(c.employees) || 0;\n  const usd = Number(c.funding_total_usd) || 0;\n  const eS = emp > 0 ? clamp(Math.log10(emp) / 4) : null;\n  const fS = usd > 0 ? clamp(Math.log10(usd) / 9) : null;\n  // size unknown (no company data) is left out of the score instead of counting as \"small\"\n  let S = null;\n  if (eS !== null && fS !== null) S = 0.6 * eS + 0.4 * fS;\n  else if (eS !== null) S = eS;\n  else if (fS !== null) S = fS;\n\n  // Momentum: headcount growth 12m 60% (ignored under 20 employees) + funding recency 40%\n  const g = (emp >= 20 && c.headcount_growth_12m !== undefined && c.headcount_growth_12m !== null) ? clamp(Number(c.headcount_growth_12m) / 0.5) : null;\n  const m = monthsAgo(c.last_funding_date);\n  const rec = m <= 12 ? 1 : m <= 24 ? 0.5 : 0;\n  // momentum also counts only as much as the job is central (funding for another product is not a threat here)\n  const M = (g !== null ? 0.6 * g + 0.4 * rec : rec) * F;\n\n  // Confidence and platform multiplier\n  const C = sel(c.status) === 'verified' ? 1.0 : 0.7;\n  const isPlatform = platformIds.has(c.id);\n  const mult = isPlatform ? PLATFORM_MULT : 1;\n\n  // what a company does (relevance) counts more than how big or fast-growing it is\n  const base = S === null ? (0.6 * R + 0.2 * M) / 0.8 : 0.6 * R + 0.2 * S + 0.2 * M;\n  const mp = marketPresence(c);\n  const marketMult = mp.label === 'none' ? NO_PRESENCE_MULT : 1;\n  const score = Math.min(100, Math.round(100 * C * base * mult * marketMult * 10) / 10);\n  const notes = [];\n  if (marketMult < 1) notes.push('no presence in ' + focusMarket + ' found: x' + NO_PRESENCE_MULT);\n  // a clearly different customer segment (checked in the judge) can never be a primary threat\n  const otherSegment = sel(c.segment_match) === 'different';\n  if (otherSegment) notes.push('different customer segment: capped at Watch');\n  if (S === null) notes.push('size unknown, not counted');\n  if (emp > 0 && emp < 20) notes.push('growth ignored (<20 employees)');\n  return {\n    id: c.id, name: c.name, score, platform_owner: isPlatform,\n    market_presence: mp.label, market_note: mp.note,\n    tier: score >= 70 && !otherSegment ? 'Primary threat' : score >= 50 ? 'Watch' : 'Peripheral',\n    score_breakdown: 'R ' + r2(R) + ' (focus ' + focus + ' x' + F + ') · S ' + (S === null ? '-' : r2(S)) + ' · M ' + r2(M) + ' · C ' + C + (isPlatform ? ' · platform x' + mult : '') + (notes.length ? ' (' + notes.join(', ') + ')' : ''),\n  };\n});\n\nrows.sort((a, b) => b.score - a.score);\nrows.forEach((r, i) => { r.rank = i + 1; });\n\nif (MARKET_ON) rules.push('focus market ' + focusMarket + ': no presence found x' + NO_PRESENCE_MULT);\nconst weights_text = 'Weights: rivalry ' + r2(W.rivalry) + ', substitute ' + r2(W.substitute) + ', new_entrant ' + r2(W.new_entrant) + '. ' + (rules.join('; ') || 'no adjustments');\nreturn rows.map((r, i) => ({ json: i === 0 ? { ...r, weights_text, judge_failed } : r }));\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1160,
+        -688
+      ],
+      "name": "Score + rank",
+      "id": "50604cd4-13bc-4747-9c97-e29305de5065"
+    },
+    {
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "tableId": "competitors",
+        "filterType": "manual",
+        "matchType": "allFilters",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ $json.id }}"
+            }
+          ]
+        },
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "score",
+              "fieldValue": "={{ $json.score }}"
+            },
+            {
+              "fieldId": "rank",
+              "fieldValue": "={{ $json.rank }}"
+            },
+            {
+              "fieldId": "tier",
+              "fieldValue": "={{ $json.tier }}"
+            },
+            {
+              "fieldId": "score_breakdown",
+              "fieldValue": "={{ $json.score_breakdown }}"
+            },
+            {
+              "fieldId": "platform_owner",
+              "fieldValue": "={{ $json.platform_owner }}"
+            },
+            {
+              "fieldId": "market_presence",
+              "fieldValue": "={{ $json.market_presence }}"
+            },
+            {
+              "fieldId": "market_note",
+              "fieldValue": "={{ $json.market_note }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        1416,
+        -688
+      ],
+      "name": "Save scores",
+      "id": "b106960e-9937-491b-9080-1ac9ce350053",
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE",
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -3216,
+        -656
+      ],
+      "id": "1f9215c9-619e-457d-82ab-cd154bd7dc01",
+      "name": "When Executed by Another Workflow"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_STAGE_3_WORKFLOW_ID",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.4,
+      "position": [
+        1640,
+        -688
+      ],
+      "id": "24a1aa09-f6a9-4f5c-a54d-3842359f46ff",
+      "name": "Call 'stage 3'"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Site check list: which competitors need a website check for the focus market?\n// Only companies whose HQ is NOT in the market and whose domain is not a market domain.\n// Local companies and market domains are already clear, so they are skipped.\nconst STATS_NODE = 'Stats';\nconst COMPETITORS_NODE = 'Get competitors';\nconst PROFILE_NODE = 'load profile';\n\n// focus market -> country codes + language code (same keys as the form)\nconst MARKETS = {\n  'DACH': { c: ['DE', 'AT', 'CH'], lang: 'de' }, 'Germany': { c: ['DE'], lang: 'de' }, 'Austria': { c: ['AT'], lang: 'de' },\n  'Switzerland': { c: ['CH'], lang: 'de' }, 'UK & Ireland': { c: ['GB', 'IE'], lang: '' }, 'France': { c: ['FR'], lang: 'fr' },\n  'Benelux': { c: ['NL', 'BE', 'LU'], lang: 'nl' }, 'Nordics': { c: ['SE', 'DK', 'NO', 'FI'], lang: 'sv' },\n  'Southern Europe': { c: ['ES', 'IT', 'PT'], lang: 'es' }, 'Central & Eastern Europe': { c: ['PL', 'CZ', 'RO', 'HU'], lang: 'pl' },\n  'EU': { c: ['DE', 'FR', 'NL', 'GB', 'ES', 'IT'], lang: '' }, 'North America': { c: ['US', 'CA'], lang: '' },\n  'United States': { c: ['US'], lang: '' }, 'Latin America': { c: ['BR', 'MX', 'AR', 'CO'], lang: 'es' },\n  'Middle East & Africa': { c: ['AE', 'SA', 'TR', 'ZA'], lang: '' }, 'India': { c: ['IN'], lang: '' },\n  'Asia-Pacific': { c: ['SG', 'AU', 'JP', 'IN'], lang: '' }, 'Global': { c: [], lang: '' }\n};\nconst COUNTRY = { DE: 'germany', AT: 'austria', CH: 'switzerland', GB: 'united kingdom', IE: 'ireland', FR: 'france',\n  NL: 'netherlands', BE: 'belgium', LU: 'luxembourg', SE: 'sweden', DK: 'denmark', NO: 'norway', FI: 'finland',\n  ES: 'spain', IT: 'italy', PT: 'portugal', PL: 'poland', CZ: 'czech', RO: 'romania', HU: 'hungary', US: 'united states',\n  CA: 'canada', BR: 'brazil', MX: 'mexico', AR: 'argentina', CO: 'colombia', AE: 'united arab emirates', SA: 'saudi arabia',\n  TR: 'turk', ZA: 'south africa', IN: 'india', SG: 'singapore', AU: 'australia', JP: 'japan' };\n\nconst sel = v => String(v && v.name ? v.name : (v === null || v === undefined ? '' : v)).toLowerCase();\nconst host = u => { const m = String(u || '').match(/^(?:https?:\\/\\/)?(?:www\\.)?([^\\/\\s?#]+)/i); return m ? m[1].toLowerCase() : ''; };\n\nlet focusMarket = '';\ntry { const pr = $(PROFILE_NODE).first().json; const pf = pr.fields || pr; focusMarket = String(pf.focus_market && pf.focus_market.name ? pf.focus_market.name : (pf.focus_market || '')); } catch (e) {}\nconst MK = MARKETS[focusMarket] || MARKETS['Global'];\nif (!MK.c.length) return [];   // no focus market -> nothing to check\n\nconst tlds = MK.c.map(x => x === 'GB' ? '.uk' : '.' + x.toLowerCase());\n// path / subdomain codes we accept as a market version of the site: language + country codes (DACH: de, at, ch)\nconst codes = [...new Set([MK.lang, ...MK.c.map(x => x.toLowerCase())].filter(Boolean))];\n\nconst RUN_ID = $(STATS_NODE).first().json.run_id;\nconst rows = $(COMPETITORS_NODE).all()\n  .map(i => ({ id: i.json.id, ...(i.json.fields || i.json) }))\n  .filter(c => c.run_id === RUN_ID && !['rejected', 'candidate'].includes(sel(c.status)));\n\nconst out = [];\nfor (const c of rows) {\n  const country = String(c.hq_country || '').toLowerCase();\n  if (country && MK.c.some(x => country.includes(COUNTRY[x]))) continue;      // local: already clear\n  const dom = host(c.domain || c.website_url);\n  if (!dom) continue;                                                          // no website to check\n  if (tlds.some(t => dom.endsWith(t))) continue;                               // market domain: already clear\n  out.push({ json: { id: c.id, name: c.name, domain: dom, url: 'https://' + dom, codes, tlds, lang: MK.lang } });\n}\nreturn out;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        360,
+        -688
+      ],
+      "id": "c10da956-6c5d-4ea7-b452-7408920bf13f",
+      "name": "Site check list",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+            },
+            {
+              "name": "Accept-Language",
+              "value": "={{ $json.lang ? $json.lang + ',en;q=0.8' : 'en' }}"
+            }
+          ]
+        },
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 5,
+              "batchInterval": 1000
+            }
+          },
+          "redirect": {
+            "redirect": {
+              "maxRedirects": 5
+            }
+          },
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        600,
+        -688
+      ],
+      "id": "e1c618fb-a03e-4632-b408-22147a7d0897",
+      "name": "Fetch homepage",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Site signals: does the homepage show a version for the focus market?\n// Signals (any one is enough): hreflang tag, html lang, own link to a market path (/de/, /de-at/),\n// market subdomain (de.brand.com) or own market domain (brand.de). Pure code, no AI.\nconst LIST_NODE = 'Site check list';\nconst list = $(LIST_NODE).all();\nconst res = $input.all();\n\nconst host = u => { const m = String(u || '').match(/^https?:\\/\\/(?:www\\.)?([^\\/\\s?#\"']+)/i); return m ? m[1].toLowerCase() : ''; };\nconst signals = {};\nconst failed = [];\n\nlist.forEach((it, i) => {\n  const c = it.json;\n  if (!c.id) return;                       // empty item (nothing to check)\n  const r = res[i] ? res[i].json : {};\n  const status = Number(r.statusCode) || 0;\n  const raw = r.html || r.data || r.body || '';\n  const html = String(typeof raw === 'string' ? raw : JSON.stringify(raw)).toLowerCase();\n  if (!html || html.length < 200 || r.error || status >= 400) { failed.push(c.name); signals[c.id] = { found: false, checked: false, note: 'website not reachable' + (status ? ' (HTTP ' + status + ')' : '') }; return; }\n\n  const codes = c.codes || [];\n  const tlds = c.tlds || [];\n  const dom = c.domain;\n  const stem = dom.split('.')[0];\n  const codeRe = '(?:' + codes.join('|') + ')(?:-[a-z]{2})?';\n  let note = '';\n\n  // 1. hreflang=\"de\" / \"de-at\" / \"de-ch\"\n  if (codes.length && new RegExp('hreflang\\\\s*=\\\\s*[\"\\']?' + codeRe + '[\"\\'\\\\s/>]').test(html)) note = 'hreflang ' + codes[0] + ' on ' + dom;\n  // 2. page itself is in the market language\n  else if (c.lang && new RegExp('<html[^>]*\\\\slang\\\\s*=\\\\s*[\"\\']?' + c.lang + '(?:-[a-z]{2})?[\"\\'\\\\s>]').test(html)) note = 'homepage in the market language (' + dom + ')';\n  else {\n    // 3./4./5. links: own market path, market subdomain or own market domain\n    const hrefs = html.match(/href\\s*=\\s*[\"'][^\"']+[\"']/g) || [];\n    for (const h of hrefs) {\n      const u = h.replace(/^href\\s*=\\s*[\"']/, '').replace(/[\"']$/, '');\n      const hh = host(u);\n      const own = !hh || hh === dom || hh.endsWith('.' + dom);\n      const path = hh ? u.replace(/^https?:\\/\\/[^\\/]+/i, '') : u;\n      if (own && new RegExp('^/' + codeRe + '(?:/|$|\\\\?|#)').test(path)) { note = 'market page ' + (hh || dom) + path.split(/[?#]/)[0]; break; }\n      if (hh && codes.some(k => hh === k + '.' + dom)) { note = 'market subdomain ' + hh; break; }\n      if (hh && hh.split('.')[0] === stem && tlds.some(t => hh.endsWith(t))) { note = 'own market domain ' + hh; break; }\n    }\n  }\n  signals[c.id] = note ? { found: true, checked: true, note } : { found: false, checked: true, note: 'website checked, no market version found' };\n});\n\nreturn [{ json: { signals, checked: list.filter(x => x.json.id).length, active: Object.values(signals).filter(s => s.found).length, failed } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        -688
+      ],
+      "id": "fe0127bf-94db-4faf-b38a-8fe8e86297b2",
+      "name": "Site signals",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "content": "## Website check (market presence)\nOnly for competitors with HQ outside the focus market. Loads each homepage and looks for hreflang, /de/ pages, a de. subdomain or a brand.de domain. No AI. Unreachable sites keep the old rule.",
+        "height": 200,
+        "width": 700
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        320,
+        -900
+      ],
+      "id": "0a931462-8afb-4a45-a029-276d62a97186",
+      "name": "Sticky Note site check"
+    },
+    {
+      "parameters": {
+        "resource": "row",
+        "operation": "getAll",
+        "tableId": "force_assessments",
+        "returnAll": true,
+        "orderBy": "created_at.asc",
+        "filterType": "manual",
+        "matchType": "allFilters",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "run_id",
+              "condition": "eq",
+              "keyValue": "={{ $json.run_id }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -2164,
+        -336
+      ],
+      "id": "b9e1d1d6-b656-4b6d-80ef-931111f77944",
+      "name": "Saved forces",
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE",
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Check saved forces: was buyer and supplier power already researched for this run?\n// Yes -> reuse the saved ratings (same run = same scores, no new search).\n// No  -> research once (F4 + F5) and save.\n// To force new research for a run: delete its 2 rows in Force Assessments.\nconst stats = $('Stats').first().json;\nconst sel = v => String(v && v.name ? v.name : (v === null || v === undefined ? '' : v));\n\nconst saved = $input.all()\n  .map(i => i.json.fields || i.json)\n  .filter(f => f.run_id === stats.run_id && f.overall && f.drivers_json);\n\nconst forces = {};\nfor (const f of saved) {\n  let drivers = [];\n  try { drivers = JSON.parse(f.drivers_json); } catch (e) { continue; }   // broken row -> research again\n  forces[sel(f.force)] = {\n    run_id: f.run_id,\n    force: sel(f.force),\n    overall: sel(f.overall),\n    known_drivers: Number(f.known_drivers) || drivers.filter(d => d.rating !== 'unknown').length,\n    drivers,\n    summary: f.summary || '',\n    drivers_text: f.drivers_text || '',\n    citations: String(f.citations_text || '').split('\\n').filter(Boolean),\n  };\n}\nconst cached = !!(forces.buyer_power && forces.supplier_power);\n\n// pass the Stats data on: the research nodes read company_name, domain, profile_text from it\nreturn [{ json: { ...stats, cached, saved_forces: cached ? [forces.buyer_power, forces.supplier_power] : [] } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1944,
+        -336
+      ],
+      "id": "cf0403e9-d12c-4242-b429-004ed0e5d6dc",
+      "name": "Check saved forces"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ee880d30-1700-469f-bb6d-040734b64096",
+              "leftValue": "={{ $json.cached }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1724,
+        -336
+      ],
+      "id": "66268d59-ade0-465c-869b-f8e8cf3ffc14",
+      "name": "Already researched?"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Forces: one place that holds buyer and supplier power for scoring\n// new research (Merge1 ran) or the saved ratings of this run (Check saved forces)\nlet items = [];\nlet source = 'saved';\nlet ran = false;\ntry { ran = $('Merge1').isExecuted; } catch (e) {}\nif (ran) {\n  items = $('Merge1').all().map(i => i.json).filter(j => j.force);\n  source = 'new research';\n} else {\n  items = $('Check saved forces').first().json.saved_forces || [];\n}\nif (items.length < 2) throw new Error('Buyer or supplier power missing (' + source + ')');\nreturn items.map(j => ({ json: { ...j, forces_source: source } }));\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        120,
+        -688
+      ],
+      "id": "d98f471f-d9d7-4b3d-804a-77334b57f948",
+      "name": "Forces"
+    },
+    {
+      "parameters": {
+        "content": "## Forces: research once per run\nIf Force Assessments already has buyer + supplier power for this run_id, they are reused (same run = same scores). To research again, delete the 2 rows of this run in Force Assessments.",
+        "height": 180,
+        "width": 460
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -2184,
+        -176
+      ],
+      "id": "921f7ac7-187a-48c6-a9c9-0f839efce0b9",
+      "name": "Sticky Note forces"
+    }
+  ],
+  "connections": {
+    "load profile": {
+      "main": [
+        [
+          {
+            "node": "Get competitors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge1": {
+      "main": [
+        [
+          {
+            "node": "Save forces",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "F4 parse": {
+      "main": [
+        [
+          {
+            "node": "Merge1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "F4 model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "F4 AI",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "F4 AI": {
+      "main": [
+        [
+          {
+            "node": "F4 parse",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "F4 research": {
+      "main": [
+        [
+          {
+            "node": "F4 AI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stats": {
+      "main": [
+        [
+          {
+            "node": "Saved forces",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get competitors": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "F5 research1": {
+      "main": [
+        [
+          {
+            "node": "F5 AI1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "F5 AI1": {
+      "main": [
+        [
+          {
+            "node": "F5 parse1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "F5 model1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "F5 AI1",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "F5 parse1": {
+      "main": [
+        [
+          {
+            "node": "Merge1",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Stats",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save forces": {
+      "main": [
+        [
+          {
+            "node": "Forces",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score + rank": {
+      "main": [
+        [
+          {
+            "node": "Save scores",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save scores": {
+      "main": [
+        [
+          {
+            "node": "Call 'stage 3'",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "load profile",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Site check list": {
+      "main": [
+        [
+          {
+            "node": "Fetch homepage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch homepage": {
+      "main": [
+        [
+          {
+            "node": "Site signals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Site signals": {
+      "main": [
+        [
+          {
+            "node": "Score + rank",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Saved forces": {
+      "main": [
+        [
+          {
+            "node": "Check saved forces",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check saved forces": {
+      "main": [
+        [
+          {
+            "node": "Already researched?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Already researched?": {
+      "main": [
+        [
+          {
+            "node": "Forces",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "F4 research",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "F5 research1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Forces": {
+      "main": [
+        [
+          {
+            "node": "Site check list",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

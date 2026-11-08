@@ -1,0 +1,603 @@
+{
+  "name": "1 · Company profile",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "Competitor Discovery",
+        "formDescription": "Enter the website of the company you want to analyse.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Company URL",
+              "placeholder": "https://example.com",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Focus market",
+              "fieldType": "dropdown",
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "DACH"
+                  },
+                  {
+                    "option": "Germany"
+                  },
+                  {
+                    "option": "Switzerland"
+                  },
+                  {
+                    "option": "UK & Ireland"
+                  },
+                  {
+                    "option": "France"
+                  },
+                  {
+                    "option": "Benelux"
+                  },
+                  {
+                    "option": "Nordics"
+                  },
+                  {
+                    "option": "Southern Europe"
+                  },
+                  {
+                    "option": "Central & Eastern Europe"
+                  },
+                  {
+                    "option": "EU"
+                  },
+                  {
+                    "option": "North America"
+                  },
+                  {
+                    "option": "United States"
+                  },
+                  {
+                    "option": "Latin America"
+                  },
+                  {
+                    "option": "Middle East & Africa"
+                  },
+                  {
+                    "option": "India"
+                  },
+                  {
+                    "option": "Asia-Pacific"
+                  },
+                  {
+                    "option": "Global"
+                  },
+                  {
+                    "option": "Austria"
+                  }
+                ]
+              },
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Include global players",
+              "fieldType": "dropdown",
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "Yes"
+                  },
+                  {
+                    "option": "No"
+                  }
+                ]
+              },
+              "requiredField": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "8d2fb881-653c-4056-8983-e01a38e81c02",
+      "name": "Website input",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.2,
+      "position": [
+        -528,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// NORMALIZE URL: clean the URL from the form and extract the domain (no URL() needed)\nconst input = $input.first().json;\nconst raw = String(input['Company URL'] || '').trim();\nconst m = raw.match(/^(?:https?:\\/\\/)?([^\\/?#:\\s]+)(?::\\d+)?/i);\nif (!m || !m[1].includes('.')) throw new Error('Invalid URL: ' + raw);\nconst host = m[1].toLowerCase();\nconst domain = host.replace(/^www\\./, '');\nconst run_id = 'run_' + Date.now();\n\nreturn [{ json: {\n  run_id,\n  input_url: 'https://' + host,\n  domain,\n  notes: input['Notes'] || '',\n  focus_market: input['Focus market'] || '',\n  include_global: (input['Include global players'] || 'Yes') === 'Yes'\n} }];"
+      },
+      "id": "e128c17f-4ea1-461d-bea6-084cbc4fca27",
+      "name": "Normalize URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -320,
+        32
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "7bb4356d-a77b-4b0f-8c4e-206d2628f6e4",
+              "leftValue": "={{ $json.needs_fetch }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "68a1a8cb-92f0-4f21-821b-b2ccfb31db34",
+      "name": "Needs fallback?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        576,
+        32
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// NODE 8 - CHECK QUOTES: parse the AI Agent output and verify every quote against the source text.\n// Single fields: one quote. List fields: one quote PER ITEM; unproven items are dropped one by one.\nconst base = $('Build prompt').first().json;\nconst raw = String($input.first().json.output || '').trim();\n// Take the JSON object out of any code fence, then parse. If that fails, repair the most\n// common model mistake (a trailing comma before } or ]) and try once more.\nconst jsonText = raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1);\nlet profile, repaired = false;\ntry {\n  profile = JSON.parse(jsonText);\n} catch (e1) {\n  try {\n    profile = JSON.parse(jsonText.replace(/,\\s*([}\\]])/g, '$1'));\n    repaired = true;\n  } catch (e2) {\n    throw new Error('AI Agent did not return valid JSON (' + e2.message + '): ' + raw.slice(0, 300));\n  }\n}\n\nconst norm = s => String(s || '').toLowerCase()\n  .replace(/[‘’]/g, \"'\").replace(/[“”]/g, '\"').replace(/[–—]/g, '-')\n  .replace(/[*_#>`\\[\\]()|]/g, ' ').replace(/\\s+/g, ' ').trim();\nconst corpus = norm(base.fetched_text);\nconst isProven = q => { const n = norm(q); return n.length >= 8 && corpus.includes(n); };\n\nconst fields = {};\nconst clean = {};\nlet verified = 0, partial = 0, rejected = 0, missing = 0;\n\nfor (const [field, obj] of Object.entries(profile)) {\n  const v = obj ? obj.value : null;\n\n  // List field with one quote per item\n  if (Array.isArray(v) && v.some(x => x && typeof x === 'object')) {\n    const kept = [], dropped = [];\n    for (const it of v) {\n      if (it && it.item && isProven(it.quote)) kept.push({ item: it.item, quote: it.quote, source_url: it.source_url || null });\n      else dropped.push({ item: it && it.item, quote: it && it.quote });\n    }\n    clean[field] = { value: kept.map(k => k.item), items: kept, dropped_items: dropped };\n    if (!v.length) { fields[field] = 'empty'; missing++; }\n    else if (!kept.length) { fields[field] = 'rejected'; rejected++; }\n    else if (dropped.length) { fields[field] = 'partial (' + kept.length + '/' + v.length + ')'; partial++; }\n    else { fields[field] = 'verified'; verified++; }\n    continue;\n  }\n\n  // Empty single field or empty list\n  const isEmpty = v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0);\n  if (isEmpty) { fields[field] = 'empty'; missing++; clean[field] = { value: null, quote: null, source_url: null }; continue; }\n\n  // Single field (or an old-style list of strings with one quote)\n  if (isProven(obj.quote)) {\n    fields[field] = 'verified'; verified++;\n    clean[field] = { value: v, quote: obj.quote, source_url: obj.source_url || null };\n  } else {\n    fields[field] = 'rejected'; rejected++;\n    clean[field] = { value: null, quote: null, source_url: null, rejected_value: v, rejected_quote: obj.quote || null };\n  }\n}\n\nconst val = f => (clean[f] ? clean[f].value : null);\nconst cap = (s, n) => (s.length > n ? s.slice(0, n) + '\\n[truncated]' : s);   // Airtable long text limit\nreturn [{ json: {\n  run_id: base.run_id,\n  input_url: base.input_url,\n  domain: base.domain,\n  company_name: val('company_name'),\n  legal_entity: val('legal_entity'),\n  hq_city: val('hq_city'),\n  category: val('category'),\n  notes: base.notes,\n  profile_json: JSON.stringify(clean, null, 2),\n  quote_check_json: JSON.stringify(fields, null, 2),\n  verified, partial, rejected, empty: missing,\n  sources_json: JSON.stringify(base.pages, null, 2),\n  dropped_json: JSON.stringify(base.dropped, null, 2),\n  fetched_text: cap(base.fetched_text, 95000),\n  json_repaired: repaired,\n  status: 'profile_ready'\n} }];"
+      },
+      "id": "ee4d46a5-8e0a-4b77-a8c0-51c5b540c9d3",
+      "name": "Check quotes",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2320,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "actorId": {
+          "__rl": true,
+          "value": "moJRLRc85AitArpNN",
+          "mode": "list",
+          "cachedResultName": "Web Scraper (apify/web-scraper)"
+        },
+        "customBody": "{{\n  \"runMode\": \"PRODUCTION\",\n  \"startUrls\": [\n    {\n      \"url\": \"{{ $json.page_url }}\"\n    }\n  ],\n  \"linkSelector\": \"\",\n  \"globs\": [],\n  \"pseudoUrls\": [],\n  \"excludes\": [\n    {\n      \"glob\": \"/**/*.{png,jpg,jpeg,gif,svg,webp,pdf,zip}\"\n    }\n  ],\n  \"pageFunction\": \"async function pageFunction(context) { const $ = context.jQuery; $('script, style, noscript, svg, iframe').remove(); const text = (document.body.innerText || '').replace(/[ \\\\t]+/g, ' ').replace(/\\\\n\\\\s*\\\\n+/g, '\\\\n').trim(); const links = []; $('a[href]').each(function () { const href = this.href; const label = $(this).text().replace(/\\\\s+/g, ' ').trim() || 'link'; if (href && href.indexOf('http') === 0) links.push('[' + label + '](' + href + ')'); }); return { url: context.request.url, title: $('title').first().text().trim(), text: text, markdown: text + '\\\\n\\\\nLINKS:\\\\n' + Array.from(new Set(links)).join('\\\\n') }; }\",\n  \"injectJQuery\": true,\n  \"proxyConfiguration\": {\n    \"useApifyProxy\": true\n  },\n  \"proxyRotation\": \"RECOMMENDED\",\n  \"useChrome\": false,\n  \"headless\": true,\n  \"ignoreSslErrors\": false,\n  \"downloadMedia\": false,\n  \"downloadCss\": false,\n  \"maxRequestRetries\": 2,\n  \"maxPagesPerCrawl\": 1,\n  \"maxResultsPerCrawl\": 1,\n  \"maxCrawlingDepth\": 1,\n  \"maxConcurrency\": 1,\n  \"pageLoadTimeoutSecs\": 60,\n  \"pageFunctionTimeoutSecs\": 60,\n  \"waitUntil\": [\n    \"networkidle2\"\n  ],\n  \"closeCookieModals\": true,\n  \"maxScrollHeightPixels\": 5000,\n  \"debugLog\": false,\n  \"browserLog\": false\n}}",
+        "timeout": {}
+      },
+      "type": "@apify/n8n-nodes-apify.apify",
+      "typeVersion": 1,
+      "position": [
+        960,
+        -112
+      ],
+      "id": "b99651e3-c16f-449f-8784-cae250f98485",
+      "name": "Run an Actor1",
+      "credentials": {
+        "apifyApi": {
+          "id": "REPLACE",
+          "name": "Apify"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.user_prompt }}",
+        "options": {
+          "systemMessage": "={{ $json.system_prompt }}"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        2032,
+        48
+      ],
+      "id": "32139d65-b339-46cd-bfa6-5b9cb0868bc3",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "content": "# Company profile",
+        "height": 608,
+        "width": 3396
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -608,
+        -192
+      ],
+      "typeVersion": 1,
+      "id": "020fa173-5fa7-4b9f-bbf5-d7204aab4afb",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "resource": "row",
+        "operation": "create",
+        "tableId": "profile_runs",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "run_id",
+              "fieldValue": "={{ $json.run_id }}"
+            },
+            {
+              "fieldId": "input_url",
+              "fieldValue": "={{ $json.input_url }}"
+            },
+            {
+              "fieldId": "domain",
+              "fieldValue": "={{ $json.domain }}"
+            },
+            {
+              "fieldId": "company_name",
+              "fieldValue": "={{ $json.company_name }}"
+            },
+            {
+              "fieldId": "legal_entity",
+              "fieldValue": "={{ $json.legal_entity }}"
+            },
+            {
+              "fieldId": "hq_city",
+              "fieldValue": "={{ $json.hq_city }}"
+            },
+            {
+              "fieldId": "category",
+              "fieldValue": "={{ $json.category }}"
+            },
+            {
+              "fieldId": "notes",
+              "fieldValue": "={{ $json.notes }}"
+            },
+            {
+              "fieldId": "profile_json",
+              "fieldValue": "={{ $json.profile_json }}"
+            },
+            {
+              "fieldId": "quote_check_json",
+              "fieldValue": "={{ $json.quote_check_json }}"
+            },
+            {
+              "fieldId": "sources_json",
+              "fieldValue": "={{ $json.sources_json }}"
+            },
+            {
+              "fieldId": "dropped_json",
+              "fieldValue": "={{ $json.dropped_json }}"
+            },
+            {
+              "fieldId": "fetched_text",
+              "fieldValue": "={{ $json.fetched_text }}"
+            },
+            {
+              "fieldId": "verified",
+              "fieldValue": "={{ $json.verified }}"
+            },
+            {
+              "fieldId": "partial",
+              "fieldValue": "={{ $json.partial }}"
+            },
+            {
+              "fieldId": "rejected",
+              "fieldValue": "={{ $json.rejected }}"
+            },
+            {
+              "fieldId": "empty",
+              "fieldValue": "={{ $json.empty }}"
+            },
+            {
+              "fieldId": "json_repaired",
+              "fieldValue": "={{ $json.json_repaired }}"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "={{ $json.status }}"
+            },
+            {
+              "fieldId": "focus_market",
+              "fieldValue": "={{ $('Normalize URL').first().json.focus_market || 'Global' }}"
+            },
+            {
+              "fieldId": "include_global",
+              "fieldValue": "={{ $('Normalize URL').first().json.include_global }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        2464,
+        48
+      ],
+      "id": "0abac354-49bb-45c5-a8b0-b049ebea030f",
+      "name": "Create a record",
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE",
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "search",
+        "query": "={{ $json.domain }} company product pricing customers about team careers",
+        "simplify": "=",
+        "options": {
+          "maxResults": 10,
+          "searchDomainFilter": "={{ $json.domain }}"
+        },
+        "requestOptions": {}
+      },
+      "type": "n8n-nodes-base.perplexity",
+      "typeVersion": 3,
+      "position": [
+        -96,
+        32
+      ],
+      "id": "b313d750-89d7-41de-8c27-7752999618da",
+      "name": "Search the web3",
+      "credentials": {
+        "perplexityApi": {
+          "id": "REPLACE",
+          "name": "Perplexity"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// NODE 4 - SORT SOURCES: rank Perplexity results, drop noise, decide if pages need fetching\nconst base = $('Normalize URL').first().json;\nconst results = $input.first().json.results || [];\n\nconst MAX_TOTAL = 40000;   // total characters sent to the AI\nconst MAX_PER_PAGE = 12000;\nconst MIN_CORE = 3000;     // below this, the core pages are too thin -> fetch them\nconst LIMITS = { blog: 2, legal: 1, other: 2 };\n\nconst pathOf = url => {\n  const m = String(url).match(/^https?:\\/\\/[^\\/?#]+([^?#]*)/i);\n  return (m ? m[1] : '/').toLowerCase().replace(/\\/+$/, '') || '/';\n};\n\nfunction classify(url) {\n  const p = pathOf(url);\n  if (/\\/llms(-full)?\\.txt$/.test(p)) return { type: 'llms', priority: 1 };\n  if (p === '/' || /^\\/[a-z]{2}(-[a-z]{2})?$/.test(p)) return { type: 'home', priority: 1 };\n  if (/privacy|datenschutz|cookie/.test(p)) return { type: 'privacy', priority: 99 };\n  if (/imprint|impressum|terms|agb|legal/.test(p)) return { type: 'legal', priority: 4 };\n  if (/^(\\/[a-z]{2})?\\/(blog|news|insights|resources|magazin)$/.test(p)) return { type: 'blog_index', priority: 99 };\n  if (/blog|news|article|insight|resource|post|magazin/.test(p)) return { type: 'blog', priority: 3 };\n  if (/about|company|team|ueber-uns|uber-uns|unternehmen/.test(p)) return { type: 'about', priority: 2 };\n  if (/pricing|preise|plans/.test(p)) return { type: 'pricing', priority: 2 };\n  if (/customer|case-stud|kunden|referen/.test(p)) return { type: 'customers', priority: 2 };\n  if (/product|platform|solution|feature|produkt|loesung|losung/.test(p)) return { type: 'product', priority: 2 };\n  if (/career|jobs|karriere/.test(p)) return { type: 'careers', priority: 2 };\n  return { type: 'other', priority: 3 };\n}\n\nconst seen = new Set();\nconst candidates = [];\nconst dropped = [];\nfor (const r of results) {\n  if (!r || !r.url) continue;\n  const key = String(r.url).toLowerCase().replace(/\\/+$/, '');\n  if (seen.has(key)) { dropped.push({ url: r.url, reason: 'duplicate' }); continue; }\n  seen.add(key);\n  const c = classify(r.url);\n  if (c.priority === 99) { dropped.push({ url: r.url, reason: c.type === 'blog_index' ? 'blog index page' : 'privacy page' }); continue; }\n  candidates.push({\n    page_type: c.type, priority: c.priority, page_url: r.url, title: r.title || '',\n    date: r.date || r.last_updated || '', text: String(r.snippet || '').trim()\n  });\n}\n\n// keep only one home page (language variants like /de count as home too)\nconst homes = candidates.filter(c => c.page_type === 'home');\nfor (const extra of homes.slice(1)) { extra.skip = 'second home page (language variant)'; }\n\n// order: priority, then newest first inside the same priority\ncandidates.sort((a, b) => a.priority - b.priority || String(b.date).localeCompare(String(a.date)));\n\nconst counts = {};\nconst pages = [];\nlet total = 0;\nfor (const c of candidates) {\n  if (c.skip) { dropped.push({ url: c.page_url, reason: c.skip }); continue; }\n  const limit = LIMITS[c.page_type];\n  counts[c.page_type] = (counts[c.page_type] || 0) + 1;\n  if (limit && counts[c.page_type] > limit) { dropped.push({ url: c.page_url, reason: c.page_type + ' limit (' + limit + ')' }); continue; }\n  if (!c.text) { dropped.push({ url: c.page_url, reason: 'empty snippet' }); continue; }\n  const text = c.text.slice(0, MAX_PER_PAGE);\n  if (total + text.length > MAX_TOTAL) { dropped.push({ url: c.page_url, reason: 'text budget full' }); continue; }\n  total += text.length;\n  pages.push({ page_type: c.page_type, priority: c.priority, page_url: c.page_url, title: c.title, source: 'perplexity_snippet', text });\n}\n\nconst coreChars = pages.filter(p => p.priority <= 2).reduce((n, p) => n + p.text.length, 0);\nconst needs_fetch = coreChars < MIN_CORE;\nlet fetch_urls = [];\nif (needs_fetch) {\n  fetch_urls = candidates.filter(c => c.priority <= 2).map(c => c.page_url).slice(0, 5);\n  if (!fetch_urls.length) fetch_urls = [base.input_url];\n}\n\nreturn [{ json: {\n  ...base,\n  pages,\n  page_summary: pages.map(p => p.page_type + ': ' + p.page_url + ' (' + p.text.length + ' chars)'),\n  dropped,\n  core_chars: coreChars,\n  total_chars: total,\n  needs_fetch,\n  fetch_urls\n} }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        144,
+        32
+      ],
+      "id": "2fe839ae-8768-470b-b56c-b426e4ba53f9",
+      "name": "Sort sources"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "claude-sonnet-5",
+          "cachedResultName": "Claude Sonnet 5"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.6,
+      "position": [
+        2032,
+        224
+      ],
+      "id": "18639b5b-4145-489b-a4b0-17069775b02b",
+      "name": "Anthropic Chat Model",
+      "credentials": {
+        "anthropicApi": {
+          "id": "REPLACE",
+          "name": "Anthropic"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// NODE 6 - BUILD PROMPT: combines snippet pages (+ fetched pages if any) and builds the AI prompt.\n// Both IF outputs connect here; only one of them runs per company.\nconst sorted = $('Sort sources').first().json;\nconst strip = u => String(u || '').toLowerCase().replace(/\\/+$/, '');\n\n// 1. Start from the pages chosen by Sort sources\nconst pages = (sorted.pages || []).map(p => ({ ...p }));\n\n// 2. Add fetched pages (only present on the \"needs fetch\" path); full text replaces a snippet of the same URL\nfor (const it of $input.all()) {\n  const j = it.json || {};\n  const url = j.url || (j['#debug'] && j['#debug'].url);\n  const text = String(j.markdown || j.text || '').trim();\n  if (!url || !text || j.pages) continue;   // skip the Sort sources item itself\n  const existing = pages.find(p => strip(p.page_url) === strip(url));\n  if (existing) { existing.text = text; existing.source = 'fetched'; }\n  else pages.push({ page_type: 'fetched', priority: 2, page_url: url, title: j.title || '', source: 'fetched', text });\n}\n\nif (!pages.length) throw new Error('No source text for ' + sorted.input_url + ' (search and fetch both empty)');\n\n// 3. Wrap each page with its URL and type\nconst MAX_PER_PAGE = 12000;\nconst fetched_text = pages\n  .map(p => '<page url=\"' + p.page_url + '\" type=\"' + p.page_type + '\">\\n' + String(p.text).slice(0, MAX_PER_PAGE) + '\\n</page>')\n  .join('\\n\\n');\n\nconst system_prompt = [\n  \"You extract a company profile from text taken from the company's own website.\",\n  'Return ONLY one JSON object. No markdown, no code fences, no commentary.',\n  '',\n  'Single fields: return {\"value\": \"...\", \"quote\": \"...\", \"source_url\": \"...\"}',\n  'List fields (marked \"list\"): return {\"value\": [{\"item\": \"...\", \"quote\": \"...\", \"source_url\": \"...\"}, ...]}',\n  '- Every list item has its OWN quote that proves that item. Leave out any item you cannot prove with a quote.',\n  '- \"quote\" is copied word for word from the page text (max 30 words). Never paraphrase or fix it.',\n  '- \"source_url\" is the url attribute of the <page> the quote comes from.',\n  '- If the pages do not state it, return {\"value\": null, \"quote\": null, \"source_url\": null}. For a list, return {\"value\": []}.',\n  '- The value must follow directly from its quote. Never guess and never use outside knowledge about the company.',\n  '- Write values in English. Keep quotes in the original language of the page.',\n  '',\n  'Source rules:',\n  '- Page types llms, home, about, product, pricing, customers, careers and fetched are the company describing itself: use them for all fields.',\n  '- Page type blog: use only for differentiators and integrations_tech. Never take customers, numbers or results from a blog: blogs quote statistics and case studies about OTHER companies.',\n  '- Page type legal: use only for legal_entity and hq_city.',\n  '- Ignore sample dashboards, demo data and example numbers in product screenshots.',\n  '- \"Industries served\" or \"who we serve\" lists describe buyers, not customers.',\n  '- regions = countries or markets the company sells to. Hosting location, data location or office address is NOT a region.',\n  '',\n  'Fields:',\n  'company_name: the brand name',\n  'legal_entity: the registered company name (e.g. \"Example GmbH\")',\n  'hq_city: city of the headquarters',\n  'one_liner: what the company does, in one sentence',\n  'category: the software or service category in 2-5 words (e.g. \"freight audit software\")',\n  'offering (list): the products or services it sells',\n  'problem_solved: the customer problem it solves',\n  'buyer_industries (list): industries of its customers',\n  'buyer_company_size: size of its customers (e.g. SMB, mid-market, enterprise)',\n  'buyer_roles (list): job roles that buy or use it',\n  'pricing_model: e.g. subscription per seat, usage-based, project-based, custom quote',\n  'price_level: one of free, low, mid, high, enterprise',\n  'regions (list): countries or regions it serves',\n  'named_customers (list): companies named as customers',\n  'differentiators (list): what it claims makes it different',\n  'integrations_tech (list): integrations, platforms and technologies it mentions',\n  'size_stage_hints: founding year, team size, funding or stage'\n].join('\\n');\n\nconst user_prompt = 'Company website: ' + sorted.input_url + '\\n\\n' + fetched_text;\n\nreturn [{ json: {\n  run_id: sorted.run_id,\n  input_url: sorted.input_url,\n  domain: sorted.domain,\n  notes: sorted.notes,\n  pages: pages.map(p => ({ page_type: p.page_type, page_url: p.page_url, source: p.source, chars: String(p.text).length })),\n  dropped: sorted.dropped || [],\n  fetched_text,\n  system_prompt,\n  user_prompt\n} }];"
+      },
+      "id": "cb24c281-d750-4969-91bb-6a48bb5ecf0f",
+      "name": "Build prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1792,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "Datasets",
+        "datasetId": "={{ $json.defaultDatasetId }}",
+        "offset": {}
+      },
+      "type": "@apify/n8n-nodes-apify.apify",
+      "typeVersion": 1,
+      "position": [
+        1184,
+        -112
+      ],
+      "id": "ff24ca0d-a9b9-42d4-9ebd-5c0f46f3e4cc",
+      "name": "Get dataset items",
+      "credentials": {
+        "apifyApi": {
+          "id": "REPLACE",
+          "name": "Apify"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "REPLACE_WITH_STAGE_2_1_WORKFLOW_ID"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.4,
+      "position": [
+        2432,
+        240
+      ],
+      "id": "a375d23a-d5ae-4b62-8c20-ee68c65e1b11",
+      "name": "Call 'Stage 2.1'"
+    }
+  ],
+  "connections": {
+    "Website input": {
+      "main": [
+        [
+          {
+            "node": "Normalize URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize URL": {
+      "main": [
+        [
+          {
+            "node": "Search the web3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs fallback?": {
+      "main": [
+        [
+          {
+            "node": "Run an Actor1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check quotes": {
+      "main": [
+        [
+          {
+            "node": "Create a record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run an Actor1": {
+      "main": [
+        [
+          {
+            "node": "Get dataset items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Check quotes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create a record": {
+      "main": [
+        [
+          {
+            "node": "Call 'Stage 2.1'",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search the web3": {
+      "main": [
+        [
+          {
+            "node": "Sort sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sort sources": {
+      "main": [
+        [
+          {
+            "node": "Needs fallback?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anthropic Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build prompt": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get dataset items": {
+      "main": [
+        [
+          {
+            "node": "Build prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

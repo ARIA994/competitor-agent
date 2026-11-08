@@ -1,0 +1,677 @@
+{
+  "name": "3 · Report (Google Docs → PDF)",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -560,
+        1008
+      ],
+      "id": "94539659-3b33-47bf-8909-c3f544b294c2",
+      "name": "When Executed by Another Workflow"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Report data: collects everything the report needs. All numbers are computed here, not by the AI.\nconst RUN = $('Report run1').first().json.run_id;\nconst f = o => (o && o.fields) ? { id: o.id, ...o.fields } : o;\nconst sel = v => String(v && v.name ? v.name : (v === null || v === undefined ? '' : v)).toLowerCase();\nconst num = v => (v === null || v === undefined || v === '') ? null : Number(v);\n\n// Profile\nconst pf = f($('Report profile1').first().json);\nlet raw = {};\ntry { raw = JSON.parse(pf.profile_json || '{}'); } catch (e) {}\nconst pv = k => { const v = raw[k] && raw[k].value; if (v === null || v === undefined || v === '') return null; return Array.isArray(v) ? v.map(i => (i && typeof i === 'object') ? i.item : i).join('; ') : String(v); };\nconst company = {\n  name: pv('company_name') || pf.company_name || pf.domain,\n  domain: pf.domain,\n  one_liner: pv('one_liner'),\n  category: pv('category'),\n  hq: pv('hq_city'),\n  buyers: pv('buyer_industries'),\n  offering: pv('offering'),\n};\nconst focusMarket = String(pf.focus_market && pf.focus_market.name ? pf.focus_market.name : (pf.focus_market || '')) || 'Global';\nconst marketOn = focusMarket !== 'Global';\n// checkbox: empty means yes (show global players as their own section)\nconst includeGlobal = pf.include_global === undefined || pf.include_global === null || pf.include_global === '' ? true : pf.include_global === true;\n\n// Competitors: approved only; if nobody is approved yet, draft mode with all non-rejected\nconst all = $('Report competitors1').all().map(i => f(i.json)).filter(c => sel(c.status) !== 'rejected');\nconst approved = all.filter(c => c.approved === true);\nconst draft = approved.length === 0;\nconst comps = (draft ? all : approved).filter(c => num(c.rank) !== null).sort((a, b) => num(a.rank) - num(b.rank));\n\nconst parseEvidence = t => String(t || '').split('\\n').map(l => {\n  const m = l.match(/^\\[(\\w+)\\]\\s*\"(.+)\"\\s*-\\s*(https?:\\S+)\\s*$/);\n  return m ? { force: m[1], quote: m[2], url: m[3] } : null;\n}).filter(Boolean);\n\nconst rows = comps.map(c => ({\n  id: c.id, rank: num(c.rank), name: c.name, domain: c.domain || null,\n  website: c.website_url || (c.domain ? 'https://' + c.domain : null),\n  linkedin: c.linkedin_url || null,\n  score: num(c.score), tier: sel(c.tier) ? (c.tier.name || c.tier) : '',\n  breakdown: c.score_breakdown || '',\n  status: sel(c.status),\n  forces: c.forces_text || '',\n  verdicts: { rivalry: sel(c.verdict_rivalry), substitute: sel(c.verdict_substitute), new_entrant: sel(c.verdict_new_entrant) },\n  what: c.what_they_do || '',\n  judge: c.judge_reasons || '',\n  employees: num(c.employees), country: c.hq_country || null, city: c.hq_city || null,\n  founded: num(c.founded_year), funding: c.funding_total || null, funding_usd: num(c.funding_total_usd),\n  last_funding_date: c.last_funding_date || null, last_funding_stage: c.last_funding_stage || null,\n  growth_12m: num(c.headcount_growth_12m), parent: c.parent_company || null,\n  platform_owner: c.platform_owner === true,\n  job_focus: sel(c.job_focus) || 'unknown',\n  business_type: sel(c.business_type) || '',\n  market: sel(c.market_presence) || 'unknown',\n  market_note: c.market_note || '',\n  // global = clear data, but no presence in the focus market found\n  global: marketOn && sel(c.market_presence) === 'none',\n  evidence: parseEvidence(c.evidence_text).slice(0, 3),\n  approved: c.approved === true,\n}));\n\n// Forces (F4, F5)\nconst forces = {};\nfor (const it of $('Report forces1').all()) {\n  const x = f(it.json);\n  let drivers = [];\n  try { drivers = JSON.parse(x.drivers_json || '[]'); } catch (e) {}\n  forces[sel(x.force)] = { overall: sel(x.overall), summary: x.summary || '', drivers };\n}\nconst buyer = forces.buyer_power || { overall: 'unknown', drivers: [] };\nconst supplier = forces.supplier_power || { overall: 'unknown', drivers: [] };\n\n// Same weight rules as Score + rank (so the method box matches the scores)\nconst W = { rivalry: 1.0, substitute: 0.8, new_entrant: 0.6 };\nif (buyer.overall === 'high') { W.rivalry += 0.1; W.substitute += 0.2; }\nif (buyer.overall === 'medium') { W.substitute += 0.1; }\nif ((buyer.drivers.find(d => d.driver === 'switching_cost') || {}).rating === 'high') W.new_entrant += 0.2;\nconst platform_mult = supplier.overall === 'high' || supplier.overall === 'medium' ? 1.1 : 1.0;\n\n// Summary numbers\nconst inMarket = rows.filter(r => !r.global);\nconst globalRows = rows.filter(r => r.global);\n// number each list on its own: DACH list 1..n, global list 1..m (overall rank kept for reference)\ninMarket.forEach((r, i) => { r.overall_rank = r.rank; r.rank = i + 1; });\nglobalRows.forEach((r, i) => { r.overall_rank = r.rank; r.rank = i + 1; });\nconst tierOf = t => inMarket.filter(r => r.tier === t);\nconst monthsAgo = d => d ? (Date.now() - new Date(d).getTime()) / (30.44 * 864e5) : Infinity;\nconst counts = {\n  analysed: rows.length,\n  in_market: inMarket.length,\n  global: globalRows.length,\n  primary: tierOf('Primary threat').length,\n  watch: tierOf('Watch').length,\n  peripheral: tierOf('Peripheral').length,\n  rivals: rows.filter(r => r.verdicts.rivalry === 'true').length,\n  substitutes: rows.filter(r => r.verdicts.substitute === 'true').length,\n  new_entrants: rows.filter(r => r.verdicts.new_entrant === 'true').length,\n  platform_owners: rows.filter(r => r.platform_owner).length,\n  funded_24m: rows.filter(r => monthsAgo(r.last_funding_date) <= 24).length,\n};\n\n// Facts for the AI: the only material it may use\nconst fmt = r => [\n  `${r.name} (rank ${r.rank}, score ${r.score}, ${r.tier})`,\n  `found as: ${r.forces}; judge: ${r.judge.replace(/\\n/g, ' | ')}`,\n  `what they do: ${r.what}`,\n  `size: ${r.employees ?? 'unknown'} employees; HQ: ${[r.city, r.country].filter(Boolean).join(', ') || 'unknown'}; founded: ${r.founded ?? 'unknown'}`,\n  `market presence in ${focusMarket}: ${r.market} (${r.market_note}); job focus: ${r.job_focus.replace('_', ' ')}`,\n  `funding: ${r.funding || 'unknown'}${r.last_funding_stage ? ', last round ' + r.last_funding_stage : ''}${r.last_funding_date ? ' on ' + String(r.last_funding_date).slice(0, 10) : ''}; headcount growth 12m: ${r.growth_12m === null ? 'unknown' : Math.round(r.growth_12m * 100) + '%'}`,\n  r.parent ? `parent company: ${r.parent}` : null,\n  r.platform_owner ? 'platform owner (TMS/ERP/visibility platform with its own audit or spend module)' : null,\n].filter(Boolean).join('\\n');\n\nconst facts_text = [\n  `ANALYSED COMPANY: ${company.name} (${company.domain}). ${company.one_liner || ''} Category: ${company.category || 'unknown'}. HQ: ${company.hq || 'unknown'}. Buyers: ${company.buyers || 'unknown'}.`,\n  '',\n  `FOCUS MARKET: ${focusMarket}. ${marketOn ? counts.in_market + ' competitors are present in this market or have no clear location data; ' + counts.global + ' are global players without a presence found in ' + focusMarket + '.' : 'No market focus.'}`,\n  '',\n  `COUNTS: ${counts.analysed} competitors in this report: ${counts.primary} primary threats, ${counts.watch} watch, ${counts.peripheral} peripheral. ${counts.rivals} direct rivals, ${counts.substitutes} substitutes, ${counts.new_entrants} new entrants. ${counts.platform_owners} platform owners. ${counts.funded_24m} raised money in the last 24 months.`,\n  '',\n  `BUYER POWER: ${buyer.overall}. ` + buyer.drivers.map(d => `${d.driver}: ${d.rating} (${d.reason})`).join(' '),\n  `SUPPLIER POWER: ${supplier.overall}. ` + supplier.drivers.map(d => `${d.driver}: ${d.rating} (${d.reason})`).join(' '),\n  '',\n  'PRIMARY THREATS:',\n  ...tierOf('Primary threat').map(fmt),\n  '',\n  'WATCH LIST:',\n  ...tierOf('Watch').map(r => `${r.name} (rank ${r.rank}, score ${r.score}): ${r.what}`),\n  '',\n  `GLOBAL PLAYERS WITHOUT A PRESENCE FOUND IN ${focusMarket.toUpperCase()}:`,\n  ...(globalRows.length ? globalRows.map(r => `${r.name} (rank ${r.rank}, score ${r.score}, HQ ${r.country || 'unknown'}): ${r.what}`) : ['none']),\n].join('\\n');\n\nreturn [{ json: {\n  run_id: RUN, draft, generated_at: new Date().toISOString().slice(0, 10),\n  company, counts, rows, buyer, supplier, focus_market: focusMarket, market_on: marketOn, include_global: includeGlobal,\n  weights: { rivalry: +W.rivalry.toFixed(2), substitute: +W.substitute.toFixed(2), new_entrant: +W.new_entrant.toFixed(2), platform_mult },\n  primary_names: tierOf('Primary threat').map(r => r.name),\n  facts_text,\n} }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        768,
+        1024
+      ],
+      "name": "Report data1",
+      "id": "689ad173-7f09-4d62-8630-b92ccd501f11"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.facts_text }}",
+        "options": {
+          "systemMessage": "You write the narrative parts of a competitor report for a founder or CEO. Use ONLY the facts below. Never add companies, numbers, dates, funding amounts or claims that are not in the facts.\n\nWrite in clear, plain business English. Short sentences. No hype, no filler, no marketing words.\n\nReturn ONLY this JSON:\n{\n  \"executive_summary\": \"max 120 words: who the biggest threats are and why, the shape of the market, and the analysed company's position (buyer and supplier power).\",\n  \"threats\": [{\"name\": \"exact company name from PRIMARY THREATS\", \"why\": \"max 50 words: why this company matters to the analysed company, based on its forces, size, funding and growth\"}],\n  \"market_position\": \"max 90 words: explain buyer power and supplier power and what they mean for the analysed company.\",\n  \"implications\": [\"3 items, max 25 words each: what the analysed company should watch or do, each tied to a fact above\"]\n}\n\nRules:\n- One \"threats\" entry for every company in PRIMARY THREATS, using the exact name.\n- Every number you write must appear in the facts exactly as written. If you are not sure, leave the number out.\n- Do not call any company a supplier or partner of the analysed company.\n- Implications are observations tied to the facts, not guarantees.\n- The facts name a FOCUS MARKET. Write market_position and implications from the perspective of a company competing in that market.\n- PRIMARY THREATS and WATCH LIST are the competitors present in the focus market. GLOBAL PLAYERS have no presence found there yet: mention them only as players to watch for market entry, never as present competitors.\n- \"No presence found\" means our data shows no signal, not that the company is absent. Do not claim a company is absent from the market."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        992,
+        1024
+      ],
+      "name": "Report AI1",
+      "id": "56514d68-0aea-4d60-9dc7-6d789cdb2a03"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "claude-sonnet-5-5",
+          "cachedResultName": "Claude Sonnet 5.5"
+        },
+        "options": {
+          "maxTokensToSample": 16000,
+          "temperature": 0.2
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        992,
+        1232
+      ],
+      "name": "Report model1",
+      "id": "58fdcf80-cbf6-49c7-896c-019e9fe45174",
+      "credentials": {
+        "anthropicApi": {
+          "id": "REPLACE",
+          "name": "Anthropic"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "r1",
+              "name": "run_id",
+              "value": "={{ $json.run_id || ($json.fields && $json.fields.run_id) }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -128,
+        1024
+      ],
+      "name": "Report run1",
+      "id": "0ce0be65-7f97-4e48-8e81-d61bdc6d9da4",
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "operation": "copy",
+        "fileId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_GOOGLE_DOCS_TEMPLATE_ID",
+          "mode": "id"
+        },
+        "name": "={{ $json.doc_title }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -192,
+        1408
+      ],
+      "name": "Copy template1",
+      "id": "3ae89c1d-4683-430c-abd0-dab66e0d0669",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "REPLACE",
+          "name": "Google Drive"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "value": "={{ $('Copy template1').first().json.id }}",
+          "mode": "id"
+        },
+        "options": {
+          "googleFileConversion": {
+            "conversion": {
+              "docsToFormat": "application/pdf"
+            }
+          },
+          "fileName": "={{ $('Doc blocks').first().json.file_name }}"
+        }
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        960,
+        1408
+      ],
+      "name": "Download PDF1",
+      "id": "e1586cb5-d19d-47e2-9f83-dd693159a1bf",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "REPLACE",
+          "name": "Google Drive"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "=https://docs.googleapis.com/v1/documents/{{ $('Copy template1').first().json.id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDocsOAuth2Api",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        352,
+        1408
+      ],
+      "name": "Get doc1",
+      "id": "e7535bdc-8b4d-4b60-8e6c-160760304a34",
+      "credentials": {
+        "googleDocsOAuth2Api": {
+          "id": "REPLACE",
+          "name": "Google Docs"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Style requests: finds the company lines in the filled Doc and makes them bold and bigger\nconst doc = $input.first().json;\nconst requests = [];\nconst style = (start, end, size) => {\n  if (end <= start) return;\n  requests.push({ updateTextStyle: {\n    range: { startIndex: start, endIndex: end },\n    textStyle: { bold: true, fontSize: { magnitude: size, unit: 'PT' } },\n    fields: 'bold,fontSize',\n  } });\n};\nconst boldOnly = (start, end) => {\n  if (end <= start) return;\n  requests.push({ updateTextStyle: { range: { startIndex: start, endIndex: end }, textStyle: { bold: true }, fields: 'bold' } });\n};\n\nconst LABELS = ['What they do:', 'Why it matters:', 'Market (', 'Evidence:', 'Score breakdown:'];\nfor (const block of (doc.body && doc.body.content) || []) {\n  const p = block.paragraph;\n  if (!p || !p.elements || !p.elements.length) continue;\n  const start = p.elements[0].startIndex;\n  const text = p.elements.map(e => (e.textRun && e.textRun.content) || '').join('');\n  const t = text.replace(/\\n$/, '');\n\n  // Primary threat header: \"1.  GoComet  —  score 95.7\" -> whole line bold, 14 pt\n  if (/^\\d+\\.\\s+.+\\s—\\s+score\\s+[\\d.]+\\s*$/.test(t)) { style(start, start + t.length, 14); continue; }\n\n  // Watch / peripheral line: \"6.  FreightFox  ·  66.9  ·  ...\" -> rank + name bold, 11.5 pt\n  const m = t.match(/^(\\d+\\.\\s+.+?)\\s+·/);\n  if (m) { style(start, start + m[1].length, 11.5); continue; }\n\n  // Labels inside the threat blocks\n  const label = LABELS.find(l => t.startsWith(l));\n  if (label) boldOnly(start, start + label.length);\n}\n\nreturn [{ json: { documentId: doc.documentId, requests, styled: requests.length } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        576,
+        1408
+      ],
+      "name": "Style requests1",
+      "id": "fd6cc377-825a-4259-8780-b5afc8e5a0b1"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://docs.googleapis.com/v1/documents/{{ $json.documentId }}:batchUpdate",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDocsOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ requests: $json.requests }) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        800,
+        1408
+      ],
+      "name": "Apply styles1",
+      "id": "4d91d28a-b310-4fa8-8278-ea8bb890f3d2",
+      "credentials": {
+        "googleDocsOAuth2Api": {
+          "id": "REPLACE",
+          "name": "Google Docs"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "# Report",
+        "height": 688,
+        "width": 2208
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -752,
+        912
+      ],
+      "typeVersion": 1,
+      "id": "a0dc7da3-493b-4a48-8129-4cf32c0fefb4",
+      "name": "Sticky Note1"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentURL": "={{ $json.id }}",
+        "actionsUi": {
+          "actionFields": [
+            {
+              "action": "replaceAll",
+              "text": "{{company_name}}",
+              "replaceText": "={{ $('Doc blocks').first().json.company_name }}",
+              "matchCase": true
+            },
+            {
+              "action": "replaceAll",
+              "text": "{{domain}}",
+              "replaceText": "={{ $('Doc blocks').first().json.domain }}",
+              "matchCase": true
+            },
+            {
+              "action": "replaceAll",
+              "text": "{{category}}",
+              "replaceText": "={{ $('Doc blocks').first().json.category }}",
+              "matchCase": true
+            },
+            {
+              "action": "replaceAll",
+              "text": "{{date}}",
+              "replaceText": "={{ $('Doc blocks').first().json.date }}",
+              "matchCase": true
+            },
+            {
+              "action": "replaceAll",
+              "text": "{{run_id}}",
+              "replaceText": "={{ $('Doc blocks').first().json.run_id }}",
+              "matchCase": true
+            },
+            {
+              "action": "replaceAll",
+              "text": "{{draft_note}}",
+              "replaceText": "={{ $('Doc blocks').first().json.draft_note }}",
+              "matchCase": true
+            },
+            {
+              "action": "replaceAll",
+              "text": "{{executive_summary}}",
+              "replaceText": "={{ $('Doc blocks').first().json.executive_summary }}",
+              "matchCase": true
+            },
+            {
+              "action": "replaceAll",
+              "text": "{{count_analysed}}",
+              "replaceText": "={{ $('Doc blocks').first().json.count_analysed }}",
+              "matchCase": true
+            },
+            {
+              "action": "replaceAll",
+              "text": "{{count_primary}}",
+              "replaceText": "={{ $('Doc blocks').first().json.count_primary }}",
+              "matchCase": true
+            },
+            {
+              "action": "replaceAll",
+              "text": "{{count_watch}}",
+              "replaceText": "={{ $('Doc blocks').first().json.count_watch }}",
+              "matchCase": true
+            },
+            {
+              "action": "replaceAll",
+              "text": "{{count_peripheral}}",
+              "replaceText": "={{ $('Doc blocks').first().json.count_peripheral }}",
+              "matchCase": true
+            },
+            {
+              "action": "replaceAll",
+              "text": "{{count_platform}}",
+              "replaceText": "={{ $('Doc blocks').first().json.count_platform }}",
+              "matchCase": true
+            },
+            {
+              "action": "replaceAll",
+              "text": "{{count_funded}}",
+              "replaceText": "={{ $('Doc blocks').first().json.count_funded }}",
+              "matchCase": true
+            },
+            {
+              "action": "replaceAll",
+              "text": "{{implications}}",
+              "replaceText": "={{ $('Doc blocks').first().json.implications }}",
+              "matchCase": true
+            },
+            {
+              "action": "replaceAll",
+              "text": "{{market_position}}",
+              "replaceText": "={{ $('Doc blocks').first().json.market_position }}",
+              "matchCase": true
+            },
+            {
+              "action": "replaceAll",
+              "text": "{{buyer_overall}}",
+              "replaceText": "={{ $('Doc blocks').first().json.buyer_overall }}",
+              "matchCase": true
+            },
+            {
+              "action": "replaceAll",
+              "text": "{{buyer_drivers}}",
+              "replaceText": "={{ $('Doc blocks').first().json.buyer_drivers }}",
+              "matchCase": true
+            },
+            {
+              "action": "replaceAll",
+              "text": "{{supplier_overall}}",
+              "replaceText": "={{ $('Doc blocks').first().json.supplier_overall }}",
+              "matchCase": true
+            },
+            {
+              "action": "replaceAll",
+              "text": "{{supplier_drivers}}",
+              "replaceText": "={{ $('Doc blocks').first().json.supplier_drivers }}",
+              "matchCase": true
+            },
+            {
+              "action": "replaceAll",
+              "text": "{{primary_threats}}",
+              "replaceText": "={{ $('Doc blocks').first().json.primary_threats }}",
+              "matchCase": true
+            },
+            {
+              "action": "replaceAll",
+              "text": "{{watch_list}}",
+              "replaceText": "={{ $('Doc blocks').first().json.watch_list }}",
+              "matchCase": true
+            },
+            {
+              "action": "replaceAll",
+              "text": "{{peripheral_list}}",
+              "replaceText": "={{ $('Doc blocks').first().json.peripheral_list }}",
+              "matchCase": true
+            },
+            {
+              "action": "replaceAll",
+              "text": "{{method}}",
+              "replaceText": "={{ $('Doc blocks').first().json.method }}",
+              "matchCase": true
+            },
+            {
+              "action": "replaceAll",
+              "text": "{{sources}}",
+              "replaceText": "={{ $('Doc blocks').first().json.sources }}",
+              "matchCase": true
+            },
+            {
+              "action": "replaceAll",
+              "text": "{{global_players}}",
+              "replaceText": "={{ $('Doc blocks').first().json.global_players }}",
+              "matchCase": true
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.googleDocs",
+      "typeVersion": 2,
+      "position": [
+        96,
+        1408
+      ],
+      "name": "Fill template1",
+      "id": "b3f21162-fa9e-4436-b017-678d2d3040f6",
+      "credentials": {
+        "googleDocsOAuth2Api": {
+          "id": "REPLACE",
+          "name": "Google Docs"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Doc blocks: checks the AI text against the facts, then builds one plain-text block per template placeholder\nconst d = $('Report data1').first().json;\nconst out = $input.first().json;\n\n// 1. Parse AI JSON (with repair). If it still fails, the report is built without AI text instead of crashing.\nconst rawAi = String(out.output || out.text || '').replace(/```json|```/g, '').trim();\nconst a = rawAi.indexOf('{'), b = rawAi.lastIndexOf('}');\nlet txt = a >= 0 && b > a ? rawAi.slice(a, b + 1) : '';\n// remove line breaks the model stream put inside strings (they split words like \"Wat\\nch\")\nconst fixStrings = t => {\n  let res = '', inStr = false, esc = false;\n  for (const ch of t) {\n    if (inStr) {\n      if (esc) { res += ch; esc = false; continue; }\n      if (ch === '\\\\') { res += ch; esc = true; continue; }\n      if (ch === '\"') { inStr = false; res += ch; continue; }\n      if (ch === '\\n') { continue; }\n      if (ch === '\\r') { continue; }\n      if (ch === '\\t') { res += ' '; continue; }\n      res += ch;\n    } else {\n      if (ch === '\"') inStr = true;\n      res += ch;\n    }\n  }\n  return res;\n};\nlet ai = null;\nconst attempts = [\n  t => t,\n  t => t.replace(/,\\s*([}\\]])/g, '$1'),\n  t => fixStrings(t),\n  t => fixStrings(t).replace(/,\\s*([}\\]])/g, '$1'),\n  t => fixStrings(t.replace(/[“”]/g, '\"')).replace(/,\\s*([}\\]])/g, '$1'),\n];\nfor (const fn of attempts) { try { ai = JSON.parse(fn(txt)); break; } catch (e) {} }\nconst aiFailed = !ai;\nif (aiFailed) ai = { executive_summary: '', threats: [], market_position: '', implications: [] };\n\n// 2. Number check: every number in the AI text must appear in the facts, else the sentence is removed\nconst factsNorm = String(d.facts_text).replace(/,/g, '');\nconst removed = [];\nconst clean = t => String(t || '').replace(/[\\r\\n]+/g, '').replace(/[ \\t]{2,}/g, ' ').trim();\nconst checkText = t => clean(t).split(/(?<=[.!?])\\s+/).filter(s => {\n  const nums = (s.replace(/,/g, '').match(/\\d+(\\.\\d+)?/g) || []);\n  const bad = nums.filter(n => !factsNorm.includes(n));\n  if (bad.length) { removed.push(s + ' [not in data: ' + bad.join(', ') + ']'); return false; }\n  return true;\n}).join(' ');\nconst execSummary = checkText(ai.executive_summary);\nconst marketText = checkText(ai.market_position);\nconst whyBy = {};\nfor (const t of ai.threats || []) if (d.primary_names.includes(t.name)) whyBy[t.name] = checkText(t.why);\nconst implications = (ai.implications || []).map(checkText).filter(Boolean);\n\n// 3. Text helpers\nconst host = u => { const m = String(u || '').match(/^https?:\\/\\/(?:www\\.)?([^\\/]+)/); return m ? m[1] : (u || ''); };\nconst pct = g => g === null || g === undefined ? '–' : (g > 0 ? '+' : '') + Math.round(g * 100) + '%';\nconst n = v => v === null || v === undefined || v === '' || Number(v) === 0 ? '–' : Number(v).toLocaleString('en-US');\nconst up = s => String(s || 'unknown').toUpperCase();\nconst forceList = r => ['rivalry', 'substitute', 'new_entrant'].filter(k => r.verdicts[k] === 'true' || r.verdicts[k] === 'unsure')\n  .map(k => k.replace('_', ' ') + (r.verdicts[k] === 'unsure' ? ' (unsure)' : '')).join(', ');\nconst inMarket = d.rows.filter(r => !r.global);\nconst globalRows = d.rows.filter(r => r.global);\nconst tier = t => inMarket.filter(r => r.tier === t);\nconst FOCUS_LABEL = { core: 'core business', major_module: 'major module', minor_feature: 'side feature', unknown: 'unknown' };\nconst MARKET_LABEL = { local: 'local', active: 'active in market', none: 'no presence found', unknown: 'location unknown', 'n/a': '–' };\nconst marketLine = r => 'Market (' + d.focus_market + '): ' + (MARKET_LABEL[r.market] || r.market) + (r.market_note ? ' – ' + r.market_note : '') +\n  '  ·  Focus: ' + (FOCUS_LABEL[r.job_focus] || r.job_focus);\nconst c = d.counts;\n\nconst drivers = f => (f.drivers || []).map(x => '• ' + x.driver.replace(/_/g, ' ') + ' — ' + up(x.rating) + ': ' + x.reason +\n  ' (' + (x.source === 'our data' ? 'our data' : host(x.source)) + ')').join('\\n') || 'No drivers rated.';\n\nconst threat = r => [\n  r.rank + '.  ' + r.name + '  —  score ' + r.score,\n  [r.website ? host(r.website) : null, forceList(r), r.platform_owner ? 'platform owner' : null].filter(Boolean).join('  ·  '),\n  'What they do: ' + (r.what || '–'),\n  marketLine(r),\n  whyBy[r.name] ? 'Why it matters: ' + whyBy[r.name] : null,\n  'Employees ' + n(r.employees) + '  ·  HQ ' + ([r.city, r.country].filter(Boolean).join(', ') || '–') + '  ·  Founded ' + (r.founded || '–') +\n    '  ·  Funding ' + (r.funding || '–') + (r.last_funding_date ? '  ·  Last round ' + [r.last_funding_stage, String(r.last_funding_date).slice(0, 10)].filter(Boolean).join(', ') : '') +\n    '  ·  Headcount 12m ' + pct(r.growth_12m) + (r.parent ? '  ·  Parent ' + r.parent : ''),\n  r.evidence.length ? 'Evidence:\\n' + r.evidence.map(e => '   • “' + e.quote + '” — ' + e.force.replace('_', ' ') + ', ' + e.url).join('\\n') : null,\n  'Score breakdown: ' + r.breakdown,\n].filter(Boolean).join('\\n');\n\nconst line = r => r.rank + '.  ' + r.name + '  ·  ' + r.score + '  ·  ' + (forceList(r) || '–') + '  ·  ' + (r.what || '–') +\n  '  ·  ' + n(r.employees) + ' employees' + (r.funding ? '  ·  ' + r.funding : '') +\n  '  ·  ' + (FOCUS_LABEL[r.job_focus] || r.job_focus) + (d.market_on ? '  ·  ' + (MARKET_LABEL[r.market] || r.market) : '');\n\n// global players: data shows no presence in the focus market (yet)\nconst globalLine = r => r.rank + '.  ' + r.name + '  ·  ' + r.score + '  ·  ' + (forceList(r) || '–') + '  ·  ' + (r.what || '–') +\n  '  ·  HQ ' + ([r.city, r.country].filter(Boolean).join(', ') || '–') + '  ·  ' + n(r.employees) + ' employees';\nconst globalBlock = !d.market_on ? 'No focus market was set, so all competitors are listed above.'\n  : !d.include_global ? globalRows.length + ' global players without a presence found in ' + d.focus_market + ' were left out at the client\\'s request.'\n  : globalRows.length ? 'Companies with relevant products whose data shows no presence in ' + d.focus_market + ' yet. Scores include a 0.8 discount. Watch them for market entry.\\n' + globalRows.map(globalLine).join('\\n')\n  : 'None.';\n\nconst citations = [...new Set([...(d.buyer.drivers || []), ...(d.supplier.drivers || [])].map(x => x.source).filter(s => s && s !== 'our data'))];\n\nconst method = [\n  'Pipeline: company website → verified profile (every field backed by a quote) → Porter search for rivals, substitutes and new entrants in English and the focus market\\'s language (Perplexity, quotes checked in code) → Apollo enrichment → AI judge per company with company data and evidence (quotes checked in code) → buyer and supplier power research → scoring in code → human approval.',\n  'Score = 100 × confidence × (0.6 × relevance + 0.2 × size + 0.2 × momentum) × platform multiplier × market factor. Relevance and momentum are weighted by how central the job is to the competitor (core business 1.0, major module 0.8, side feature 0.5). Unknown size is left out, not counted as small.',\n  'Force weights: rivalry ' + d.weights.rivalry + ', substitute ' + d.weights.substitute + ', new entrant ' + d.weights.new_entrant + ' (adjusted by buyer power). Platform owners × ' + d.weights.platform_mult + ' (supplier power). Confidence: verified 1.0, unsure 0.7.',\n  d.market_on ? 'Market (' + d.focus_market + '): local = HQ in the market; active = HQ elsewhere, but a market domain, a market version of the own website (hreflang tag, /de/ pages, de. subdomain or .de domain, checked in code) or own website pages in the market language; no presence found = known HQ elsewhere and no market signal (score × 0.8); location unknown = no company data, no discount. A missing signal does not prove absence.' : null,\n  'Tiers: 70+ primary threat, 50–69 watch, below 50 peripheral. Breakdown codes: R relevance, S size, M momentum, C confidence.',\n  'Not assessed in this version: customer segment (company size of the competitor\\'s customers).',\n  aiFailed ? 'Quality check: the AI text could not be read, so the written parts were left out.' : null,\n  removed.length ? 'Quality check: ' + removed.length + ' AI sentence(s) removed because they contained numbers not found in the data.' : null,\n].filter(Boolean).join('\\n');\n\n// Google Docs rejects empty replace text, so every block gets a fallback\nconst nz = (s, fb) => (s && String(s).trim()) ? String(s) : (fb || '–');\n\nreturn [{ json: {\n  run_id: d.run_id, draft: d.draft, ai_failed: aiFailed, ai_raw: rawAi.slice(0, 4000), removed_sentences: removed,\n  doc_title: 'Competitor report – ' + d.company.name + ' – ' + d.generated_at,\n  file_name: 'competitor-report-' + String(d.company.domain || 'company').replace(/[^a-z0-9.-]/gi, '') + '-' + d.generated_at + '.pdf',\n  company_name: nz(d.company.name),\n  domain: nz(d.company.domain),\n  category: nz(d.company.category),\n  date: d.generated_at,\n  draft_note: d.draft ? 'Automated analysis. The competitor list has not yet been reviewed by hand.' : ' ',\n  executive_summary: nz(execSummary, 'Not available.'),\n  count_analysed: String(c.analysed), count_primary: String(c.primary), count_watch: String(c.watch),\n  count_peripheral: String(c.peripheral), count_platform: String(c.platform_owners), count_funded: String(c.funded_24m),\n  implications: nz(implications.map(i => '• ' + i).join('\\n'), 'Not available.'),\n  market_position: nz(marketText, ' '),\n  buyer_overall: up(d.buyer.overall), buyer_drivers: drivers(d.buyer),\n  supplier_overall: up(d.supplier.overall), supplier_drivers: drivers(d.supplier),\n  primary_threats: nz(tier('Primary threat').map(threat).join('\\n\\n'), 'No primary threats.'),\n  watch_list: nz(tier('Watch').map(line).join('\\n'), 'None.'),\n  peripheral_list: nz(tier('Peripheral').map(line).join('\\n'), 'None.'),\n  method,\n  sources: nz(citations.map(u => '• ' + u).join('\\n'), 'None.'),\n  global_players: nz(globalBlock, 'None.'),\n} }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -416,
+        1408
+      ],
+      "name": "Doc blocks",
+      "id": "c60c83e4-e951-4659-930a-b86af0be2c4e"
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "profile_runs",
+        "limit": 1,
+        "matchType": "allFilters",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "run_id",
+              "condition": "eq",
+              "keyValue": "={{ $('Report run1').first().json.run_id }}"
+            }
+          ]
+        }
+      },
+      "id": "e132b54b-5091-4d78-95a4-b406f79c3f7e",
+      "name": "Report profile1",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        96,
+        1024
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE",
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "competitors",
+        "returnAll": true,
+        "matchType": "allFilters",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "run_id",
+              "condition": "eq",
+              "keyValue": "={{ $('Report run1').first().json.run_id }}"
+            }
+          ]
+        }
+      },
+      "id": "5ec35610-f709-4704-a8e6-5bf2d196f21b",
+      "name": "Report competitors1",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        336,
+        1024
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE",
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "force_assessments",
+        "returnAll": true,
+        "orderBy": "created_at.asc",
+        "matchType": "allFilters",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "run_id",
+              "condition": "eq",
+              "keyValue": "={{ $('Report run1').first().json.run_id }}"
+            }
+          ]
+        }
+      },
+      "id": "44c84770-f960-4bab-8450-62b9eb0ceb72",
+      "name": "Report forces1",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        544,
+        1024
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE",
+          "name": "Supabase"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Report run1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Report data1": {
+      "main": [
+        [
+          {
+            "node": "Report AI1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Report AI1": {
+      "main": [
+        [
+          {
+            "node": "Doc blocks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Report model1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Report AI1",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Copy template1": {
+      "main": [
+        [
+          {
+            "node": "Fill template1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get doc1": {
+      "main": [
+        [
+          {
+            "node": "Style requests1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Style requests1": {
+      "main": [
+        [
+          {
+            "node": "Apply styles1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply styles1": {
+      "main": [
+        [
+          {
+            "node": "Download PDF1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fill template1": {
+      "main": [
+        [
+          {
+            "node": "Get doc1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Doc blocks": {
+      "main": [
+        [
+          {
+            "node": "Copy template1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Report run1": {
+      "main": [
+        [
+          {
+            "node": "Report profile1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Report profile1": {
+      "main": [
+        [
+          {
+            "node": "Report competitors1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Report competitors1": {
+      "main": [
+        [
+          {
+            "node": "Report forces1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Report forces1": {
+      "main": [
+        [
+          {
+            "node": "Report data1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
