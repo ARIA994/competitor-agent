@@ -85,12 +85,17 @@ score = 100 × C × (0.6 × R + 0.2 × S + 0.2 × M) × platform × market
 
 | Part | Meaning |
 |---|---|
-| **R** relevance | Best force weight (rivalry 1.0, substitute 0.8, new entrant 0.6; adjusted by buyer power), multiplied by job focus (core 1.0, major module 0.8, side feature 0.5) |
+| **R** relevance | Best force weight (base: rivalry 1.0, substitute 0.8, new entrant 0.6; adjusted by buyer power, see below), multiplied by job focus (core 1.0, major module 0.8, side feature 0.5) |
 | **S** size | Employees and funding (log scale). Unknown size is left out, not counted as small. |
 | **M** momentum | Headcount growth (12 months) and funding recency, multiplied by job focus |
 | **C** confidence | verified 1.0, unsure 0.7 |
 | **platform** | ×1.1 for TMS/ERP/visibility platforms when supplier power is medium or high |
 | **market** | ×0.8 when the HQ is known, outside the focus market, and no market signal was found |
+
+**Buyer power adjusts the force weights** (so the weights in a report can differ from the base values):
+- Buyer power medium: substitute +0.1
+- Buyer power high: rivalry +0.1, substitute +0.2
+- Switching costs low (switching-cost driver rated high buyer power): new entrant +0.2
 
 **Tiers:** 70+ primary threat · 50–69 watch · below 50 peripheral. A clearly different customer segment is capped at Watch.
 
