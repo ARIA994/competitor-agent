@@ -154,8 +154,6 @@ The report from that run, anonymised: all company names are replaced with letter
 - **Size pulls large platforms up.** A big TMS with an audit module can outrank a small company doing exactly the same job.
 - **The research prompts for buyer and supplier power are tuned for logistics software.** Other industries need adjusted questions, so the prompts need to be personalised for each industry.
 
-**Next:** company cache (pay for each company once), waterfall enrichment (Impressum check, second data source), a stricter rivalry rule, and a monthly change report.
-
 ---
 
 Built by Aria Irani · [LinkedIn](https://www.linkedin.com/in/aria-irani-7a9563261) · [GitHub](https://github.com/ARIA994)
