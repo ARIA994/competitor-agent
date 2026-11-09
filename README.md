@@ -127,7 +127,9 @@ Tested on a Berlin SaaS company in transportation spend management, with focus m
 
 ### Sample report
 
-The PDF from that run, with the analysed company's name removed.
+The report from that run, anonymised: all company names are replaced with letters and locations are reduced to countries. Scores, structure and method are unchanged.
+
+**[Download the sample report (PDF)](docs/sample-report/sample-competitor-report.pdf)**
 
 ![Sample report, page 1](docs/sample-report/sample-report-page-1.png)
 

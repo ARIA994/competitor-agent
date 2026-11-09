@@ -3,3 +3,4 @@
 .DS_Store
 exports/
 *.pdf
+!docs/sample-report/sample-competitor-report.pdf
